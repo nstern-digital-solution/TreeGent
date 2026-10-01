@@ -1,0 +1,9 @@
+{
+  "private": {
+    "chatUrl": "http://127.0.0.1:8000",
+    "serviceToken": "dev-service-token"
+  },
+  "public": {
+    "title": "TreeGent"
+  }
+}

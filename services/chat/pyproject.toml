@@ -1,0 +1,14 @@
+[project]
+name = "treegent-chat"
+version = "0.1.0"
+description = "TreeGent chat service: actors, org tree, DMs/channels, messages, inbox"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "motor>=3.6",
+    "pydantic-settings>=2.6",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

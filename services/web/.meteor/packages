@@ -1,0 +1,16 @@
+ecmascript
+meteor-base
+mobile-experience
+static-html
+tracker
+mongo
+standard-minifier-css
+standard-minifier-js
+es5-shim
+shell-server
+accounts-password
+check
+ddp
+react-meteor-data
+webapp
+hot-code-push

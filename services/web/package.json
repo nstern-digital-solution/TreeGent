@@ -1,0 +1,14 @@
+{
+  "name": "treegent-web",
+  "private": true,
+  "scripts": {
+    "start": "meteor run --port 3000",
+    "start:prod": "meteor run --production --port 3000"
+  },
+  "dependencies": {
+    "@babel/runtime": "^7.26.0",
+    "meteor-node-stubs": "^1.2.6",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  }
+}

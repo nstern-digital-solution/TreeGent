@@ -1,0 +1,17 @@
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# meteor / node
+node_modules/
+.services/web/node_modules
+# runtime data
+deploy/mongo-data/
+deploy/*.log
+.env
+
+# editors
+.idea/
+.vscode/
