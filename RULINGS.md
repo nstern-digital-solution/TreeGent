@@ -10,11 +10,11 @@ else does. Status legend:
 | # | Decision | Status | Value |
 |---|----------|--------|-------|
 | R1 | Project name | PROPOSED | `constellation` (placeholder, rename = 1 command) |
-| R2 | Agent runtime language | OPEN | asked: TS / Python / mixed |
-| R3 | Wake policy for inbound messages | OPEN | asked: wake on DM / heartbeat-only / hybrid |
-| R4 | First milestone shape | OPEN | asked: walking skeleton / vertical depth / platform first |
-| R5 | Deployment topology | OPEN | asked: single host compose / small fleet / k8s |
-| R6 | Org/hierarchy source of truth | OPEN | asked: DB+admin UI / org file in repo / hybrid |
+| R2 | Agent runtime language | FIRM | Python |
+| R3 | Wake policy for inbound messages | FIRM | wake immediately on DMs and @mentions; channel chatter waits for heartbeat |
+| R4 | First milestone shape | FIRM | platform first — chat, proxy, secrets, files solid; agents last |
+| R5 | Deployment topology | FIRM | 1 central host for shared services + separate agent hosts |
+| R6 | Org/hierarchy source of truth | FIRM | database + admin UI in the Meteor app |
 | R7 | Chat client protocol | PROPOSED | WebSocket JSON (typed events), REST for tool-side writes |
 | R8 | File storage backend | PROPOSED | S3-compatible store (MinIO) + WebDAV gateway for Linux mounts |
 | R9 | Secret envelope format | PROPOSED | age/X25519 envelopes; ACLs enforced server-side |
@@ -26,3 +26,9 @@ else does. Status legend:
 | R15 | Subagents | FIRM (spec) | none — one continuous session per agent, delegation = messaging a colleague |
 | R16 | Superior secret access | FIRM (spec) | superiors can always access subordinates' secrets |
 | R17 | Inference path | FIRM (spec) | all agent LLM traffic via central OpenAI-compatible proxy with per-agent usage stats |
+| R18 | Agent execution model | PROPOSED | agents run as systemd services on their host (not containerized) with native Docker access for dev work; fallback: containerized agents with Docker socket mounted (sibling containers) |
+| R19 | Fleet installs/updates | FIRM (requirement) | no manual per-agent installs/updates — central management. PROPOSED mechanism: pull-based `agentd` supervisor per host + desired-state service, rollout from admin UI |
+| R20 | Per-agent resources | PROPOSED | systemd cgroup limits per agent (CPUQuota, MemoryMax), per-agent home dir with disk quota; dev containers are ephemeral and sized by host capacity |
+| R21 | Shared-services stack | PROPOSED | Python/FastAPI services + PostgreSQL + Redis; MinIO for file blobs; Meteor only for web |
+| R22 | Agent ↔ service auth | PROPOSED | host enrollment token at bootstrap → per-agent service tokens; agents identified at every service |
+| R23 | Action history | PROPOSED | runtime reports every tool call to the control service's audit ledger; web UI renders chat + action timeline per agent |
