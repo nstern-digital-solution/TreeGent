@@ -1,10 +1,10 @@
-# SPEC — constellation
+# SPEC — TreeGent
 
 Autonomous multi-agent company: agents and humans as colleagues on one shared
 chat platform, with hierarchy, shared secrets, shared files, and metered
 inference. Built from scratch, inspired by OpenClaw and Hermes Agent.
 
-Working name `constellation` is a placeholder (RULINGS R1).
+Working name `TreeGent` is a placeholder (RULINGS R1).
 
 ## Requirements (verbatim — the operator, 2026-10-01)
 

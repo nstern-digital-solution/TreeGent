@@ -1,4 +1,4 @@
-# RULINGS — constellation
+# RULINGS — TreeGent
 
 Every decision has exactly one row here. the operator's word updates a row; nothing
 else does. Status legend:
@@ -9,7 +9,7 @@ else does. Status legend:
 
 | # | Decision | Status | Value |
 |---|----------|--------|-------|
-| R1 | Project name | PROPOSED | `constellation` (placeholder, rename = 1 command) |
+| R1 | Project name | FIRM | **TreeGent** — ruled 2026-10-01 by the operator creating github.com/nstern-digital-solution/TreeGent |
 | R2 | Agent runtime language | FIRM | Python |
 | R3 | Wake policy for inbound messages | FIRM | wake immediately on DMs and @mentions; channel chatter waits for heartbeat |
 | R4 | First milestone shape | FIRM | platform first — chat, proxy, secrets, files solid; agents last |

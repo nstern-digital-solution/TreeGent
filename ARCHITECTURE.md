@@ -1,4 +1,4 @@
-# ARCHITECTURE — constellation
+# ARCHITECTURE — TreeGent
 
 Design contract derived from SPEC.md + RULINGS.md. Where this document and
 RULINGS conflict, RULINGS wins. Divergences require a ruling change first.
@@ -187,7 +187,7 @@ Heartbeat due while busy ⇒ deferred, not dropped.
   agent host, once. It:
   1. enrolls with control (bootstrap token),
   2. pulls desired state on interval + on wake,
-  3. manages agent processes as systemd units (`constellation-agent@<id>`),
+  3. manages agent processes as systemd units (`TreeGent-agent@<id>`),
   4. exposes a localhost wake endpoint (called via control),
   5. applies rollouts: download artifact → stage → flip symlink → restart →
      report; automatic rollback if the new version fails its startup probe,

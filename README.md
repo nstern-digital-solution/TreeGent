@@ -1,14 +1,15 @@
-# constellation
+# TreeGent
 
 Autonomous multi-agent company: agents and humans as colleagues on a shared
 chat platform, with hierarchy, secrets, files, and metered inference — built
 from scratch, inspired by OpenClaw and Hermes Agent.
 
-Working name (renameable in one ruling).
+Repo: https://github.com/nstern-digital-solution/TreeGent
 
 ## Status
 
-Phase 0 — spec captured, first rulings pending.
+Phase 0 complete — spec verbatim, architecture v1, rulings R1–R6 + R14–R19
+firm. Next: M1 (chat service + Meteor messaging).
 
 ## Documents
 
