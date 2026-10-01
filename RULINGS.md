@@ -29,6 +29,6 @@ else does. Status legend:
 | R18 | Agent execution model | PROPOSED | agents run as systemd services on their host (not containerized) with native Docker access for dev work; fallback: containerized agents with Docker socket mounted (sibling containers) |
 | R19 | Fleet installs/updates | FIRM (requirement) | no manual per-agent installs/updates — central management. PROPOSED mechanism: pull-based `agentd` supervisor per host + desired-state service, rollout from admin UI |
 | R20 | Per-agent resources | PROPOSED | systemd cgroup limits per agent (CPUQuota, MemoryMax), per-agent home dir with disk quota; dev containers are ephemeral and sized by host capacity |
-| R21 | Shared-services stack | PROPOSED | Python/FastAPI services + PostgreSQL + Redis; MinIO for file blobs; Meteor only for web |
+| R21 | Shared-services stack | PROPOSED | Python/FastAPI services + MongoDB + Redis; MinIO for file blobs; Meteor only for web. Mongo over PG: Meteor reactivity is Mongo-native; org hierarchy via stored ancestors path; one DB to operate. Swap per-service later is contained (no cross-service joins) |
 | R22 | Agent ↔ service auth | PROPOSED | host enrollment token at bootstrap → per-agent service tokens; agents identified at every service |
 | R23 | Action history | PROPOSED | runtime reports every tool call to the control service's audit ledger; web UI renders chat + action timeline per agent |

@@ -12,7 +12,7 @@ RULINGS conflict, RULINGS wins. Divergences require a ruling change first.
   Humans ──Meteor WS──▶ │  services/web (Meteor)        │
                         │  services/chat      ──┐       │
                         │  services/proxy      ──┤       │
-                        │  services/secrets    ──┤ PG /  │
+                        │  services/secrets    ──┤ Mongo │
                         │  services/files ─MinIO─┤ Redis │
                         │  services/control    ──┘       │
                         └───────┬───────────────────────┘
@@ -38,12 +38,12 @@ Two planes:
 
 ## 2. Services (central host)
 
-Common: Python 3.12 + FastAPI + PostgreSQL + Redis. All services authenticate
+Common: Python 3.12 + FastAPI + MongoDB + Redis. All services authenticate
 callers by actor token (R22) and write audit events to the control ledger.
 
 ### 2.1 services/chat — actors, org, conversations
 
-Tables (sketch):
+Collections (sketch):
 
 - `actor(id, kind: human|agent, display_name, ...)` — one roster for people
   and agents (R12).
