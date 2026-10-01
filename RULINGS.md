@@ -32,3 +32,6 @@ else does. Status legend:
 | R21 | Shared-services stack | PROPOSED | Python/FastAPI services + MongoDB + Redis; MinIO for file blobs; Meteor only for web. Mongo over PG: Meteor reactivity is Mongo-native; org hierarchy via stored ancestors path; one DB to operate. Swap per-service later is contained (no cross-service joins) |
 | R22 | Agent ↔ service auth | PROPOSED | host enrollment token at bootstrap → per-agent service tokens; agents identified at every service |
 | R23 | Action history | PROPOSED | runtime reports every tool call to the control service's audit ledger; web UI renders chat + action timeline per agent |
+| R24 | Agent email inboxes | FIRM (spec addendum) | every registered agent gets an inbox on the company mail domain; inbound mail delivered via the standard injection rule; outbound mail ALWAYS requires approval |
+| R25 | Approval system | FIRM (spec addendum) | gated actions need superior approval before execution; the approver may be human or agent; gated-action types configurable |
+| R26 | v1 gated-action set | PROPOSED | only `mail.send` gated at launch (spec-mandated); further action types (e.g. payments, external posts, secret shares) added by ruling via admin UI |

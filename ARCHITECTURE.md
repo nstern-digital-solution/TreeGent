@@ -11,9 +11,11 @@ RULINGS conflict, RULINGS wins. Divergences require a ruling change first.
                         │                               │
   Humans ──Meteor WS──▶ │  services/web (Meteor)        │
                         │  services/chat      ──┐       │
-                        │  services/proxy      ──┤       │
-                        │  services/secrets    ──┤ Mongo │
-                        │  services/files ─MinIO─┤ Redis │
+                        │  services/mail      ──┤       │
+                        │  services/approvals ─┤       │
+                        │  services/proxy      ─┤ Mongo │
+                        │  services/secrets    ──┤ Redis │
+                        │  services/files ─MinIO─┤       │
                         │  services/control    ──┘       │
                         └───────┬───────────────────────┘
                                 │ wake calls / desired state (pull)
@@ -68,7 +70,44 @@ picked up by the next heartbeat. Wake = chat service asks `control` to poke
 the agent; a failed wake is never fatal — every turn starts by draining the
 inbox, and heartbeats are the safety net.
 
-### 2.2 services/proxy — inference gateway (R17)
+### 2.2 services/mail — company email for agents
+
+- Every registered agent gets a real inbox, `<agent>@<company-domain>`
+  (domain + mail server configured at deploy time; service self-manages
+  mailboxes via the mail server's API, or delivers to one catch-all and
+  routes by recipient address).
+- **Inbound**: SMTP receipt → normalized message → lands in the agent's chat
+  inbox (sender shown as the external address) → delivered by the standard
+  injection rule at next turn. No push.
+- **Outbound (gated)**: the `mail.send` tool never sends directly. It
+  creates an approval (`action_type: mail.send`, payload = full MIME draft:
+  recipients, subject, body, attachments) routed to the requester's direct
+  superior. On approve → service sends via SMTP → the sender agent gets the
+  outcome injected ("Your email to X was approved and sent at <ts>"). On
+  reject → outcome injected with the approver's reason. Expiry (default 72h)
+  → outcome injected as expired.
+- Humans can have mailboxes too if ruled later; v1 is agent-only (spec).
+
+### 2.3 services/approvals — the gate for gated actions
+
+- `approval` objects as defined in SPEC; append-only state history
+  (`pending → approved|rejected|expired`, no edits).
+- **Gated-action registry**: per action-type, scope global / per-org-node /
+  per-agent — editable in admin UI. Lookup order: agent → org node → global
+  default. v1: `mail.send` gated everywhere (spec-mandated); all other
+  action types ungated until ruled.
+- **Approver routing**: default = requester's direct superior (from the org
+  tree, maintained in chat service; ancestry = stored path, single lookup).
+  Multiple superiors (matrix orgs) → first configured approver, or "any of"
+  — needs a small ruling when we get there; v1 assumes tree.
+- **Delivery to approver**: approval requests are delivered like messages —
+  web UI badge + list for humans; for agent approvers, an injected
+  "Approval requested: …" block plus the `approval.decide` tool. Agent
+  approvers decide in their own single session like everything else.
+- **Audit**: every create/approve/reject/expire + the gated action's
+  execution outcome lands in the control audit ledger (R23).
+
+### 2.4 services/proxy — inference gateway (R17)
 
 - OpenAI-compatible: `/v1/chat/completions`, `/v1/embeddings`, streaming.
 - Auth: per-agent keys (`sk-agt-…`) issued by control at enrollment.
@@ -81,7 +120,7 @@ inbox, and heartbeats are the safety net.
 - Never stores prompt content by default — metadata only (privacy default,
   toggle per deployment).
 
-### 2.3 services/secrets (R9, R16)
+### 2.5 services/secrets (R9, R16)
 
 - Entries: `secret(id, owner_id, name, ciphertext, acl[], notes)` —
   envelope-encrypted at rest with the service master key (server-side, so
@@ -91,7 +130,7 @@ inbox, and heartbeats are the safety net.
   plaintext value).
 - API: `write`, `read`, `list`, `share`, `revoke`, `rotate`.
 
-### 2.4 services/files (R8)
+### 2.6 services/files (R8)
 
 - Blobs in MinIO (S3 API); metadata + ACL in PG: `file_object(id, owner,
   path, size, sha256, acl[])` with share-space prefixes
@@ -100,7 +139,7 @@ inbox, and heartbeats are the safety net.
   FUSE client later if WebDAV performance annoys us.
 - API: `put/get/list/share/delete` + presigned URLs for big transfers.
 
-### 2.5 services/control — fleet brain (R19, R23)
+### 2.7 services/control — fleet brain (R19, R23)
 
 - Desired state: hosts, agents (which host, version, model profile,
   heartbeat config, persona prompt), routing table references.
@@ -112,11 +151,13 @@ inbox, and heartbeats are the safety net.
 - Audit ledger: append-only stream of every tool call agents report + all
   service-side auth events. Feeds the web "action history" (R23).
 
-### 2.6 services/web — Meteor
+### 2.8 services/web — Meteor
 
 - Human chat client (DMs, channels, live updates) — humans are actors, so
   this is a view on services/chat.
 - Files browser, secrets manager UI (with hierarchy-aware visibility).
+- Approvals: pending-approval inbox for humans, gated-action registry
+  editor, approval history (who decided what, when).
 - Admin: org tree editor (R6), agent CRUD + host assignment + heartbeat
   config + persona prompt, proxy routing table + budgets, usage dashboards.
 - History viewer: chat log timeline fused with action history per agent.
@@ -151,6 +192,8 @@ trigger (wake | heartbeat | admin)
   └─▶ model call(s) via services/proxy (agent key)
         tools loop:
           chat.send / chat.read / chat.list
+          mail.send (gated: creates approval, never sends directly)
+          approval.list / approval.decide (for agent approvers)
           secrets.* / files.*
           exec (subprocess in ~/work, timeout, output caps)
           docker (CLI; sibling containers for dev environments)
@@ -237,9 +280,10 @@ Heartbeat due while busy ⇒ deferred, not dropped.
 |---|---|---|
 | M1 | chat + web messaging | 2 humans DM + channel via Meteor; org tree editable; inbox tables + wake stubs |
 | M2 | proxy | agents' keys work against 1 real provider via OpenAI-compatible API; usage dashboard |
-| M3 | secrets + files | CRUD/share via API + web UI; hierarchy access proven by test; WebDAV mount works |
-| M4 | control + agentd + runtime v1 | agent enrolled on 2nd host, one continuous session, injection block proven, heartbeat fires, tools: chat + exec + scratch |
-| M5 | tools v2 | browser + docker; action history visible in web |
-| M6 | fleet ops | rollouts with rollback from admin UI; resource limits; backups of `life/` |
+| M3 | approvals + mail | approval objects + gated-action registry in admin UI; agent mailboxes; inbound mail lands as inbox injection; outbound `mail.send` gated → approve/reject round-trip proven by test |
+| M4 | secrets + files | CRUD/share via API + web UI; hierarchy access proven by test; WebDAV mount works |
+| M5 | control + agentd + runtime v1 | agent enrolled on 2nd host, one continuous session, injection block proven, heartbeat fires, tools: chat + exec + scratch + approval.decide + mail |
+| M6 | tools v2 | browser + docker; action history visible in web |
+| M7 | fleet ops | rollouts with rollback from admin UI; resource limits; backups of `life/` |
 
 Each milestone ends with a demo the operator can see (his eyes, not tool-success).

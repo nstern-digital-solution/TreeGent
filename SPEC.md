@@ -4,7 +4,7 @@ Autonomous multi-agent company: agents and humans as colleagues on one shared
 chat platform, with hierarchy, shared secrets, shared files, and metered
 inference. Built from scratch, inspired by OpenClaw and Hermes Agent.
 
-Working name `TreeGent` is a placeholder (RULINGS R1).
+Name ruled in RULINGS R1: **TreeGent**.
 
 ## Requirements (verbatim — the operator, 2026-10-01)
 
@@ -42,6 +42,14 @@ Working name `TreeGent` is a placeholder (RULINGS R1).
 > So we would need a monorepo with different services and ways to deploy and
 > update these centrally run shared services aswell as the agents.
 
+## Requirements addendum (verbatim — the operator, 2026-10-01, later same day)
+
+> I also just remembered we need a central email system where every
+> registered agent gets its own email inbox, how ever outgoing / sending
+> emails always need to be approved by the superior. In generall we need an
+> approval system where certain actions need to be approved by the superior
+> be it human or agent.
+
 ## Interpretation (Hermes draft — not a ruling)
 
 ### Core concepts
@@ -62,12 +70,29 @@ Working name `TreeGent` is a placeholder (RULINGS R1).
 - **Injection** — at turn start, undelivered messages are rendered as a block:
   `You have a new message from X received at <timestamp>: ...` (per spec).
   Nothing is ever pushed into a running turn.
+- **Email inbox** — every registered agent gets a real email address on the
+  company mail domain. Inbound mail lands in the agent's chat inbox and is
+  delivered by the same injection rule (no push). Outbound mail is a gated
+  action (below).
+- **Approval** — a first-class object: `{id, requester, action_type, payload,
+  approver, status: pending|approved|rejected|expired, decided_by, decided_at,
+  reason}`. Actions registered as *gated* execute only after approval.
+  Default approver = the requester's direct superior — human **or** agent
+  (spec: "be it human or agent"). Approval requests reach the approver like
+  any message (web UI for humans; inbox injection + `approval.decide` tool
+  for agents); the requester gets the outcome injected ("Your email to X was
+  approved and sent at <ts>" / "rejected: <reason>").
+- **Gated-action registry** — which action types require approval, per agent/
+  role/global, editable in the admin UI. v1 ships with `mail.send` gated by
+  default (spec-mandated); everything else starts ungated until ruled.
 
 ### Services (planned monorepo layout)
 
 | Service | Owns |
 |---|---|
 | `services/chat` | actors, org, DMs, channels, message store, delivery queues, presence |
+| `services/mail` | agent email inboxes (inbound → inbox injection), outbound send with approval gate |
+| `services/approvals` | approval objects, gated-action registry, routing to superior, decision API |
 | `services/proxy` | OpenAI-compatible endpoint, per-agent auth, provider routing, usage stats |
 | `services/secrets` | envelope-encrypted store, sharing, hierarchy-based superior access |
 | `services/files` | shared file storage + ACLs, mountable on Linux (WebDAV gateway) |
