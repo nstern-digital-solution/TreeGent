@@ -17,22 +17,54 @@ def now():
     return datetime.now(timezone.utc)
 
 
+def _ready_providers() -> set[str]:
+    """Providers this deployment can actually call (configured + keyed)."""
+    ready = set()
+    if settings.openrouter_api_key:
+        ready.add("openrouter")
+    return ready
+
+
 async def resolve_model(class_doc: dict) -> tuple[str, str] | None:
-    """class → (model_id, provider_name): explicit ordered model list first,
-    then catalog fallback by preference within provider prefs."""
-    requires = class_doc.get("requires") or []
+    """class → (model_id, provider_name), provider-agnostic (R31/R33).
+
+    Explicit admin override (`models`) wins; otherwise: candidates =
+    catalog entries of READY providers matching the class criteria
+    (required caps, max output price per 1M tok), cheapest first."""
+    # explicit override for determinism when an admin wants it
+    requires = (class_doc.get("criteria") or {}).get("requires") or []
     for mid in class_doc.get("models") or []:
         m = await db.model_catalog.find_one({"_id": mid, "listed": True})
         if m and all(c in (m.get("caps") or []) for c in requires):
-            return mid, mid.split("/", 1)[0]
-    for pref in class_doc.get("provider_prefs", []):
-        q: dict = {"_id": {"$regex": f"^{pref}/"}, "listed": True}
-        if requires:
-            q["caps"] = {"$all": requires}  # note: $all:[] matches nothing
-        cur = db.model_catalog.find(q).sort("preference", 1)
-        async for m in cur:
-            return m["_id"], pref
-    return None
+            prov = mid.split("/", 1)[0]
+            if prov in _ready_providers():
+                return mid, prov
+
+    crit = class_doc.get("criteria") or {}
+    requires = crit.get("requires") or []
+    max_out = crit.get("max_price_out")   # USD per 1M completion tokens
+    min_ctx = crit.get("min_ctx") or 0
+    ready = _ready_providers()
+    candidates = []
+    async for m in db.model_catalog.find({"listed": True}):
+        prov = m["_id"].split("/", 1)[0]
+        if prov not in ready:
+            continue
+        if requires and not all(c in (m.get("caps") or []) for c in requires):
+            continue
+        if max_out is not None:
+            po = m.get("price_out")
+            if po is None or po > max_out:
+                continue
+        if (m.get("ctx") or 0) < min_ctx:
+            continue
+        candidates.append(m)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda m: (m.get("price_out") or 1e9,
+                                   m.get("price_in") or 1e9))
+    best = candidates[0]
+    return best["_id"], best["_id"].split("/", 1)[0]
 
 
 async def call_openrouter(model_id: str, job: dict) -> dict:
