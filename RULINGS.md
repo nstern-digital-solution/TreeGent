@@ -37,4 +37,5 @@ else does. Status legend:
 | R26 | v1 gated-action set | PROPOSED | only `mail.send` gated at launch (spec-mandated); further action types (e.g. payments, external posts, secret shares) added by ruling via admin UI |
 | R27 | M1 demo host | FIRM | this dev machine — compose stack locally, browser demo; move to real central host later |
 | R28 | Web login (M1) | FIRM | username + password, admin-provisioned users, Meteor accounts-password; SSO layer later |
-| R29 | Web frontend framework | FIRM | **React** (Meteor 3 default pairing, react-meteor-data/useTracker). Blaze attempt reverted same day — the operator: "REACT OF COURSE ITS DEFAULT FOR METEOR NOW" |
+| R29 | Web frontend framework | FIRM | **React** (Meteor 3 default pairing, react-meteor-data/useTracker). Blaze attempt reverted same day — the operator: React is the Meteor default now |
+| R30 | License | FIRM | **AGPL-3.0** — network copyleft; competitors can't run closed forks of the public code; dual-licensing stays open as an option |
