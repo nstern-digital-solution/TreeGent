@@ -107,18 +107,70 @@ inbox, and heartbeats are the safety net.
 - **Audit**: every create/approve/reject/expire + the gated action's
   execution outcome lands in the control audit ledger (R23).
 
-### 2.4 services/proxy — inference gateway (R17)
+### 2.4 services/proxy — inference gateway (R17, R31–R34)
 
-- OpenAI-compatible: `/v1/chat/completions`, `/v1/embeddings`, streaming.
-- Auth: per-agent keys (`sk-agt-…`) issued by control at enrollment.
-- Routing: model → ordered provider list (OpenAI/Anthropic/local vLLM/…),
-  fallback on error, retries with backoff. Routing table in PG, editable via
-  admin UI.
-- Metering: every request → `usage_event(agent, model, provider, tokens_in,
-  tokens_out, latency_ms, cost_est, status, ts)`. Per-agent budgets/caps
-  enforced here (hard stop or alert).
-- Never stores prompt content by default — metadata only (privacy default,
-  toggle per deployment).
+Job-queue based, not streaming-first. Agents submit generation jobs and get
+woken (proxy → control → agentd → agent, reason `generation-done`) when the
+result is ready. Rationale: with many agents, hosted rate limits and slow
+endpoints make synchronous serving unreliable; a scheduler degrades
+gracefully (queues, defers to rate-window resets, fails over).
+
+**Request shape** — the agent runtime owns content (transcript window,
+persona, scratch — assembled locally via the shared `treegent-runtime` lib
+into OpenAI-format messages with stable-prefix discipline for caching); the
+proxy owns the wire (provider formats, tool-schema translation, retries,
+metering). The proxy never sees the raw transcript.
+
+**Model selection (R31)** — class-based dynamic routing. Admin defines task
+classes (cheap / standard / reasoning / vision / …) each mapping to an
+ordered provider preference; a live model catalog (auto-refreshed from
+provider APIs + admin-editable) resolves class → concrete model that is
+currently listed, healthy and within rate budget at dispatch time. No
+per-agent model assignment (churn), no agent free choice (agents can't
+self-assess). Heartbeats map to a cheap class by default; work turns to a
+stronger class — the biggest spend lever.
+
+**Priority + serialization (R32)** — priority = org-hierarchy weight ×
+inverse token usage over the trailing 48h (senior AND frugal agents
+dispatch first). Max ONE in-flight generation per agent: later triggers
+(including heartbeats) queue behind the active one or merge into the next
+turn — an active request is never cancelled and never runs parallel to a
+second one for the same agent (pre-heartbeat and post-heartbeat results
+must not interleave into one sequence).
+
+**Providers (R33)** — any OpenAI-compatible endpoint is a provider config
+entry (base_url + key + rate budget); self-hosted vLLM is just another
+entry, no special casing.
+
+**Modalities** — wire format is OpenAI content-parts (text/image) from day
+one; M2 implements text in/out + image input; embeddings endpoint included
+(vision checks against catalog capabilities; audio/video generation deferred
+until a tool needs it).
+
+**Caching** — stable prefixes (persona+system first, tools stable, newest
+last); provider-native cache insertion (Anthropic cache_control,
+OpenAI prompt_cache_key = agent id); same-session provider affinity while
+healthy (switching providers discards warm prefix cache).
+
+**History (R34)** — full content stored: prompts, completions, tool calls,
+per job — feeds the web history viewer ("chat and action history", spec).
+
+**Metering** — `usage_event(agent, class, model, provider, tokens_in,
+tokens_out, latency_ms, cost_est, queue_wait_ms, status, ts)`; per-agent
+budgets/caps enforced here. Priority's usage factor reads the same ledger.
+
+Collections: `agents_keys`, `task_classes`, `providers`, `model_catalog`,
+`jobs`, `job_results`, `usage_events`, `history`.
+
+REST sketch:
+
+```
+POST /v1/jobs            submit generation job (agent key)
+GET  /v1/jobs/{id}       poll job status/result (fallback; wake is primary)
+POST /v1/embeddings      synchronous (small, fast, non-queued)
+GET  /v1/models          catalog for admins/runtime
+admin: classes/providers/catalog/budgets (via web admin UI)
+```
 
 ### 2.5 services/secrets (R9, R16)
 
