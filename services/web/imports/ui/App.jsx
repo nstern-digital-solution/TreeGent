@@ -7,6 +7,8 @@ import { ChatPane } from './ChatPane.jsx';
 import { Roster } from './Roster.jsx';
 import { OrgChart } from './OrgChart.jsx';
 import { Admin } from './Admin.jsx';
+import { UsageDashboard } from './UsageDashboard.jsx';
+import { ModelsDashboard } from './ModelsDashboard.jsx';
 
 export function App() {
   const user = useTracker(() => Meteor.user(), []);
@@ -33,6 +35,8 @@ export function App() {
           <button className={`tab ${tab === 'roster' ? 'on' : ''}`} onClick={() => setTab('roster')}>Roster</button>
           <button className={`tab ${tab === 'org' ? 'on' : ''}`} onClick={() => setTab('org')}>Org</button>
           {isAdmin && <button className={`tab ${tab === 'admin' ? 'on' : ''}`} onClick={() => setTab('admin')}>Admin</button>}
+          {isAdmin && <button className={`tab ${tab === 'usage' ? 'on' : ''}`} onClick={() => setTab('usage')}>Usage</button>}
+          {isAdmin && <button className={`tab ${tab === 'models' ? 'on' : ''}`} onClick={() => setTab('models')}>Models</button>}
         </nav>
         <span className="me">
           {actor ? `${actor.display_name} · ${actor.kind}` : user.username}
@@ -43,6 +47,8 @@ export function App() {
       {tab === 'roster' && <Roster me={actor} />}
       {tab === 'org' && <OrgChart />}
       {tab === 'admin' && isAdmin && <Admin />}
+      {tab === 'usage' && isAdmin && <UsageDashboard />}
+      {tab === 'models' && isAdmin && <ModelsDashboard />}
     </div>
   );
 }

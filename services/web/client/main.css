@@ -52,3 +52,20 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f6f8fa; color
 .new-user { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1.5rem; }
 .new-user input, .new-user select { padding: .4rem; border: 1px solid #c9d1d9; border-radius: 6px; }
 .new-user button { padding: .4rem 1rem; border: 0; border-radius: 6px; background: #1a7f64; color: #fff; cursor: pointer; }
+
+/* --- M2 dashboards ------------------------------------------------------ */
+.page { padding: 1rem 1.5rem; overflow-y: auto; flex: 1; }
+.usage-table { border-collapse: collapse; width: 100%; max-width: 980px; background: #fff; border: 1px solid #d0d7de; border-radius: 8px; }
+.usage-table th, .usage-table td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #eaeef2; font-size: .85rem; }
+.usage-table th { background: #f0f3f6; font-size: .75rem; text-transform: uppercase; letter-spacing: .03em; color: #57606a; }
+.mono { font-family: ui-monospace, monospace; font-size: .8rem; }
+.btn { padding: .35rem .8rem; border: 1px solid #1a7f64; background: #1a7f64; color: #fff; border-radius: 6px; cursor: pointer; font-size: .85rem; }
+.btn.small { padding: .15rem .5rem; font-size: .75rem; }
+.btn.danger { background: #b3261e; border-color: #b3261e; }
+.btn.active, .btn.small.active { background: #14342b; border-color: #14342b; }
+.tabbar { display: flex; gap: .4rem; margin: .75rem 0; }
+.ok-msg { color: #116936; font-size: .85rem; }
+.err-msg { color: #b3261e; font-size: .85rem; }
+.provider-form { display: flex; flex-direction: column; gap: .5rem; max-width: 480px; }
+.provider-form input { padding: .45rem .6rem; border: 1px solid #c9d1d9; border-radius: 6px; }
+.small { font-size: .75rem; }

@@ -5,7 +5,9 @@ Providers are DATA (rows in `providers`: name, kind, base_url, key_env,
 enabled) — never code (R33). One generic OpenAI-compatible client serves
 every provider of kind 'openai-compat'."""
 import asyncio
+import json
 import time
+import urllib.request
 from datetime import datetime, timezone
 
 import httpx
@@ -195,3 +197,55 @@ async def worker_loop():
             raise
         except Exception:  # noqa: BLE001
             await asyncio.sleep(1)
+
+
+async def refresh_catalog() -> int:
+    """Pull the live model list from every READY provider and upsert the
+    catalog (prices per 1M tokens, capabilities, context). Deployments with
+    no configured providers keep an empty catalog — jobs then fail with a
+    clear 'no model available' instead of calling something unconfigured."""
+    n = 0
+    ready = await ready_providers()
+    for name, p in ready.items():
+        if p.get("kind") != "openai-compat":
+            continue  # future provider kinds get their own fetchers
+        base = p["base_url"].rstrip("/")
+        req = urllib.request.Request(
+            f"{base}/models",
+            headers={"Authorization": f"Bearer {provider_key(p)}"})
+        models = json.load(urllib.request.urlopen(req, timeout=30))["data"]
+        for m in models:
+            mid = m["id"]
+            if ":batch" in mid or ":free" in mid:
+                continue
+            pr = m.get("pricing") or {}  # OpenRouter-style per-token pricing
+            pin = pout = None
+            try:
+                p = float(pr.get("prompt", "nan")) * 1_000_000
+                q = float(pr.get("completion", "nan")) * 1_000_000
+                # providers use negative sentinels for "dynamic/unknown" —
+                # store as null so such models never win cheapest-first
+                pin = p if p > 0 else None
+                pout = q if q > 0 else None
+            except (TypeError, ValueError):
+                pass  # plain OpenAI /models has no pricing → default prices
+            caps = []
+            nm = mid.lower()
+            if any(s in nm for s in ("claude", "gpt-4", "gpt-5", "gpt-6",
+                                     "gemini", "llama")):
+                caps.append("vision")
+            if any(s in nm for s in ("sonnet", "gpt-4.1", "gpt-5", "gpt-6",
+                                     "gemini-2.5", "o4", "deepseek")):
+                caps.append("reasoning")
+            await db.model_catalog.update_one(
+                {"_id": f"{name}/{mid}"},
+                {"$set": {"provider": name, "listed": True, "caps": caps,
+                          "ctx": m.get("context_length"),
+                          "price_in": pin, "price_out": pout}},
+                upsert=True)
+            n += 1
+    # models of providers that lost their key/config get unlisted
+    await db.model_catalog.update_many(
+        {"provider": {"$nin": list(ready.keys())}},
+        {"$set": {"listed": False}})
+    return n

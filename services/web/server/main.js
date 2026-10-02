@@ -1,9 +1,11 @@
 import { Meteor } from 'meteor/meteor';
 import { Accounts } from 'meteor/accounts-base';
 import { Actors, Conversations, Messages } from '../imports/collections.js';
+import { TaskClasses, Providers, ModelCatalog, UsageEvents } from '../imports/proxyCollections.js';
 
 const CHAT_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.private.chatUrl) || 'http://127.0.0.1:8000';
 const SERVICE_TOKEN = (Meteor.settings && Meteor.settings.private && Meteor.settings.private.serviceToken) || 'dev-service-token';
+const PROXY_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.proxyUrl) || 'http://127.0.0.1:8001';
 
 // --- helpers (Meteor 3: async collection access on the server) -----------
 
@@ -69,6 +71,33 @@ Meteor.publish('messages', async function (conversationId, limit) {
 Meteor.publish('allUsernames', function () {
   if (!this.userId) return this.ready();
   return Meteor.users.find({}, { fields: { username: 1 } });
+});
+
+// --- proxy dashboards (reads reactive off the shared DB) ---------------
+
+Meteor.publish('proxyClasses', function () {
+  if (!this.userId) return this.ready();
+  return TaskClasses.find();
+});
+
+Meteor.publish('proxyProviders', function () {
+  if (!this.userId) return this.ready();
+  // never publish anything secret; provider rows only carry key_env NAMES
+  return Providers.find({}, { fields: { kind: 1, base_url: 1, key_env: 1, enabled: 1 } });
+});
+
+Meteor.publish('proxyCatalog', function (limit) {
+  if (!this.userId) return this.ready();
+  return ModelCatalog.find({ listed: true },
+    { sort: { price_out: 1 }, limit: Math.min(limit || 100, 500) });
+});
+
+Meteor.publish('proxyUsage', function (days) {
+  if (!this.userId) return this.ready();
+  const cutoff = new Date(Date.now() - (days || 7) * 86400 * 1000);
+  return UsageEvents.find({ ts: { $gte: cutoff } },
+    { fields: { agent_id: 1, tokens_in: 1, tokens_out: 1, cost_est: 1,
+                status: 1, model: 1, provider: 1, ts: 1, class: 1 } });
 });
 
 // --- accounts bootstrap (R28: admin-provisioned) -----------------------
@@ -150,5 +179,24 @@ Meteor.methods({
     const me = await myActor(await Meteor.userAsync());
     if (!me) throw new Meteor.Error('no-actor', 'user has no actor record');
     return await api(`/conversations/${conversationId}/messages`, 'POST', me._id, { body });
+  },
+
+  // --- proxy admin (writes via proxy admin API; single writer) ----------
+
+  async 'proxy.admin'(path, method, body) {
+    check(path, String); check(method, String);
+    const caller = await Meteor.userAsync();
+    if (!caller || !caller.isAdmin) throw new Meteor.Error('forbidden', 'admin only');
+    const res = await fetch(`${PROXY_URL}${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Meteor.Error('proxy-api', `${res.status}: ${
+        typeof data.detail === 'string' ? data.detail : JSON.stringify(data)}`);
+    }
+    return data;
   },
 });
