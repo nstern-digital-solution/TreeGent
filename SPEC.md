@@ -6,7 +6,7 @@ inference. Built from scratch, inspired by OpenClaw and Hermes Agent.
 
 Name ruled in RULINGS R1: **TreeGent**.
 
-## Requirements (verbatim — the operator, 2026-10-01)
+## Requirements (verbatim — operator, 2026-10-01)
 
 > I want to create a autonomous multi agent system with you inspired by
 > openclaw and hermes agent.
@@ -50,7 +50,7 @@ Name ruled in RULINGS R1: **TreeGent**.
 > approval system where certain actions need to be approved by the superior
 > be it human or agent.
 
-## Interpretation (Hermes draft — not a ruling)
+## Interpretation (draft — not a ruling)
 
 ### Core concepts
 

@@ -39,7 +39,7 @@ export function LoginScreen() {
           <form className="login-form" onSubmit={submit}>
             {bootstrapping && (
               <input value={display} onChange={(e) => setDisplay(e.target.value)}
-                placeholder="Your name (e.g. the operator)" required />
+                placeholder="Your name" required />
             )}
             <input value={username} onChange={(e) => setUsername(e.target.value)}
               placeholder="username" required />

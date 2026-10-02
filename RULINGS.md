@@ -1,11 +1,11 @@
 # RULINGS — TreeGent
 
-Every decision has exactly one row here. the operator's word updates a row; nothing
+Every decision has exactly one row here. The operator's word updates a row; nothing
 else does. Status legend:
 
 - **FIRM** — ruled by the operator (or verbatim in SPEC.md). Contract.
 - **PROPOSED** — working default. Overridable anytime, in effect until then.
-- **OPEN** — awaiting the operator's call. Listed in the next clarification round.
+- **OPEN** — awaiting The operator's call. Listed in the next clarification round.
 
 | # | Decision | Status | Value |
 |---|----------|--------|-------|
@@ -35,6 +35,6 @@ else does. Status legend:
 | R24 | Agent email inboxes | FIRM (spec addendum) | every registered agent gets an inbox on the company mail domain; inbound mail delivered via the standard injection rule; outbound mail ALWAYS requires approval |
 | R25 | Approval system | FIRM (spec addendum) | gated actions need superior approval before execution; the approver may be human or agent; gated-action types configurable |
 | R26 | v1 gated-action set | PROPOSED | only `mail.send` gated at launch (spec-mandated); further action types (e.g. payments, external posts, secret shares) added by ruling via admin UI |
-| R27 | M1 demo host | FIRM | this machine (dev machine) — compose stack locally, browser demo; move to real central host later |
+| R27 | M1 demo host | FIRM | this dev machine — compose stack locally, browser demo; move to real central host later |
 | R28 | Web login (M1) | FIRM | username + password, admin-provisioned users, Meteor accounts-password; SSO layer later |
 | R29 | Web frontend framework | FIRM | **React** (Meteor 3 default pairing, react-meteor-data/useTracker). Blaze attempt reverted same day — the operator: "REACT OF COURSE ITS DEFAULT FOR METEOR NOW" |
