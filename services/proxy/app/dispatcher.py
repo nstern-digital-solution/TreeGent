@@ -1,5 +1,9 @@
 """Dispatcher: pulls queued jobs by priority, resolves class → model via the
-catalog, calls the provider, meters usage, stores history (R34)."""
+catalog, calls the provider generically, meters usage, stores history (R34).
+
+Providers are DATA (rows in `providers`: name, kind, base_url, key_env,
+enabled) — never code (R33). One generic OpenAI-compatible client serves
+every provider of kind 'openai-compat'."""
 import asyncio
 import time
 from datetime import datetime, timezone
@@ -7,22 +11,32 @@ from datetime import datetime, timezone
 import httpx
 
 from . import db
-from .config import settings
+from .config import env_fallback
 
-# rough per-$ per-1k pricing for cost estimates; catalog can override
-DEFAULT_PRICES = {"in": 0.15, "out": 0.60}  # per 1M tokens, fallback
+# fallback pricing (USD per 1M tokens) when a provider's catalog doesn't
+# report prices (e.g. plain OpenAI /models has none; OpenRouter does)
+DEFAULT_PRICES = {"in": 0.15, "out": 0.60}
 
 
 def now():
     return datetime.now(timezone.utc)
 
 
-def _ready_providers() -> set[str]:
-    """Providers this deployment can actually call (configured + keyed)."""
-    ready = set()
-    if settings.openrouter_api_key:
-        ready.add("openrouter")
-    return ready
+def provider_key(provider_doc: dict) -> str:
+    """Resolve a provider's API key: TG_PROXY_KEY_<NAME> env var first, then
+    the env var named by its key_env field (env or runtime env file)."""
+    name = (provider_doc.get("_id") or "").upper().replace("-", "_")
+    return env_fallback(f"TG_PROXY_KEY_{name}") or env_fallback(
+        provider_doc.get("key_env", ""))
+
+
+async def ready_providers() -> dict[str, dict]:
+    """{name: provider_doc} for enabled providers whose key resolves."""
+    out: dict[str, dict] = {}
+    async for p in db.providers.find({"enabled": True}):
+        if provider_key(p):
+            out[p["_id"]] = p
+    return out
 
 
 async def resolve_model(class_doc: dict) -> tuple[str, str] | None:
@@ -31,20 +45,19 @@ async def resolve_model(class_doc: dict) -> tuple[str, str] | None:
     Explicit admin override (`models`) wins; otherwise: candidates =
     catalog entries of READY providers matching the class criteria
     (required caps, max output price per 1M tok), cheapest first."""
-    # explicit override for determinism when an admin wants it
+    ready = await ready_providers()
     requires = (class_doc.get("criteria") or {}).get("requires") or []
     for mid in class_doc.get("models") or []:
         m = await db.model_catalog.find_one({"_id": mid, "listed": True})
         if m and all(c in (m.get("caps") or []) for c in requires):
             prov = mid.split("/", 1)[0]
-            if prov in _ready_providers():
+            if prov in ready:
                 return mid, prov
 
     crit = class_doc.get("criteria") or {}
     requires = crit.get("requires") or []
     max_out = crit.get("max_price_out")   # USD per 1M completion tokens
     min_ctx = crit.get("min_ctx") or 0
-    ready = _ready_providers()
     candidates = []
     async for m in db.model_catalog.find({"listed": True}):
         prov = m["_id"].split("/", 1)[0]
@@ -67,13 +80,12 @@ async def resolve_model(class_doc: dict) -> tuple[str, str] | None:
     return best["_id"], best["_id"].split("/", 1)[0]
 
 
-async def call_openrouter(model_id: str, job: dict) -> dict:
-    """OpenAI-compatible call. Works for any provider with a base_url (R33);
-    OpenRouter is the first configured provider. Catalog ids are
-    '<provider>/<model>'; the wire needs just the model part."""
-    url = "https://openrouter.ai/api/v1/chat/completions"
+async def call_provider(provider_doc: dict, model_id: str, job: dict) -> dict:
+    """Generic OpenAI-compatible chat completion. model_id is the catalog
+    id '<provider>/<model>'; the wire takes the model part only."""
+    base = provider_doc["base_url"].rstrip("/")
     headers = {
-        "Authorization": f"Bearer {settings.openrouter_api_key}",
+        "Authorization": f"Bearer {provider_key(provider_doc)}",
         "Content-Type": "application/json",
     }
     payload = {
@@ -89,7 +101,7 @@ async def call_openrouter(model_id: str, job: dict) -> dict:
             for t in job["tools"]
         ]
     async with httpx.AsyncClient(timeout=180) as c:
-        r = await c.post(url, headers=headers, json=payload)
+        r = await c.post(f"{base}/chat/completions", headers=headers, json=payload)
         if r.status_code != 200:
             raise RuntimeError(f"provider {r.status_code}: {r.text[:300]}")
         return r.json()
@@ -101,8 +113,10 @@ async def meter(job: dict, model_id: str, provider: str, resp: dict,
     tin = usage.get("prompt_tokens") or 0
     tout = usage.get("completion_tokens") or 0
     cat = await db.model_catalog.find_one({"_id": model_id}) or {}
-    pin = cat.get("price_in", DEFAULT_PRICES["in"]) / 1_000_000
-    pout = cat.get("price_out", DEFAULT_PRICES["out"]) / 1_000_000
+    pin = (cat.get("price_in") if cat.get("price_in") is not None
+           else DEFAULT_PRICES["in"]) / 1_000_000
+    pout = (cat.get("price_out") if cat.get("price_out") is not None
+            else DEFAULT_PRICES["out"]) / 1_000_000
     await db.usage_events.insert_one({
         "_id": f"use_{job['_id'][4:]}",
         "job_id": job["_id"],
@@ -129,13 +143,14 @@ async def process_job(job: dict):
             "finished_at": now()}})
         return
     model_id, provider = resolved
+    provider_doc = (await ready_providers()).get(provider)
     await db.jobs.update_one({"_id": job["_id"]}, {"$set": {
         "status": "dispatched", "dispatched_at": now(), "model": model_id,
         "provider": provider}})
     queue_wait = (time.time() - job["created_at"].timestamp()
                   if job.get("created_at") else 0.0)
     try:
-        resp = await call_openrouter(model_id, job)
+        resp = await call_provider(provider_doc, model_id, job)
         await meter(job, model_id, provider, resp, queue_wait, "ok")
         # R34: full history per job
         await db.history.insert_one({
