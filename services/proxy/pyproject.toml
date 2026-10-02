@@ -1,0 +1,15 @@
+[project]
+name = "treegent-proxy"
+version = "0.1.0"
+description = "TreeGent inference proxy: job queue, class routing, metering, history"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "motor>=3.6",
+    "httpx>=0.27",
+    "pydantic-settings>=2.6",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
