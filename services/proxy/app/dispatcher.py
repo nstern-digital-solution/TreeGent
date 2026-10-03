@@ -1,5 +1,10 @@
-"""Dispatcher: pulls queued jobs by priority, resolves class → model via the
-catalog, calls the provider generically, meters usage, stores history (R34).
+"""Dispatcher: pulls queued jobs by priority, selects models by rank (R31b),
+calls the provider generically, meters usage, stores history (R34).
+
+Selection (operator ruling): designation filter (class = agent|task) →
+modality filter (request needs image/video/audio/file input) → availability
+filter (provider/model health cooldowns from live errors) → highest rank.
+NO pricing anywhere: rank + exclusions are the admin's policy levers.
 
 Providers are DATA (rows in `providers`: name, kind, base_url, key_env,
 enabled) — never code (R33). One generic OpenAI-compatible client serves
@@ -8,21 +13,19 @@ import asyncio
 import json
 import time
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
 from . import db
 from .config import env_fallback
 
-# fallback pricing (USD per 1M tokens) when a provider's catalog doesn't
-# report prices (e.g. plain OpenAI /models has none; OpenRouter does)
-DEFAULT_PRICES = {"in": 0.15, "out": 0.60}
-
 
 def now():
     return datetime.now(timezone.utc)
 
+
+# ---------------- provider plumbing ----------------
 
 def provider_key(provider_doc: dict) -> str:
     """Resolve a provider's API key: TG_PROXY_KEY_<NAME> env var first, then
@@ -41,46 +44,80 @@ async def ready_providers() -> dict[str, dict]:
     return out
 
 
-async def resolve_model(class_doc: dict) -> tuple[str, str] | None:
-    """class → (model_id, provider_name), provider-agnostic (R31/R33).
+# ---------------- health tracking (availability filter) ----------------
 
-    Explicit admin override (`models`) wins; otherwise: candidates =
-    catalog entries of READY providers matching the class criteria
-    (required caps, max output price per 1M tok), cheapest first."""
+class RateLimited(Exception):
+    pass
+
+
+class ProviderError(Exception):
+    pass
+
+
+async def mark_blocked(scope: str, seconds: int, reason: str) -> None:
+    """scope = provider name (whole provider) or 'provider/model'."""
+    await db.provider_health.update_one(
+        {"_id": scope},
+        {"$set": {"blocked_until": now() + timedelta(seconds=seconds),
+                  "reason": reason[:200], "ts": now()},
+         "$inc": {"fails": 1}},
+        upsert=True)
+
+
+async def mark_ok(provider: str) -> None:
+    await db.provider_health.delete_many({"_id": {"$regex": f"^{provider}"}})
+
+
+async def blocked_scopes() -> set[str]:
+    """Scopes currently cooling down (provider- and model-level)."""
+    cur = db.provider_health.find({"blocked_until": {"$gt": now()}})
+    return {h["_id"] async for h in cur}
+
+
+# ---------------- model selection (R31b) ----------------
+
+def detect_needs(messages: list[dict]) -> list[str]:
+    """Modalities the request actually needs, from its content parts."""
+    needs: set[str] = set()
+    for m in messages or []:
+        content = m.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            t = (part.get("type") or "").lower()
+            if t in ("image_url", "image", "input_image"):
+                needs.add("image")
+            elif t in ("input_audio", "audio_url", "audio"):
+                needs.add("audio")
+            elif t in ("video_url", "video", "input_video"):
+                needs.add("video")
+            elif t in ("file_url", "file", "input_file"):
+                needs.add("file")
+    return sorted(needs)
+
+
+async def select_candidates(class_name: str, needs: list[str]) -> list[dict]:
+    """Ordered candidate models: designation → modality → availability →
+    rank (desc). Admin controls rank, designations, excluded flags, and
+    provider enabled flags — all data, no code."""
+    blocked = await blocked_scopes()
     ready = await ready_providers()
-    requires = (class_doc.get("criteria") or {}).get("requires") or []
-    for mid in class_doc.get("models") or []:
-        m = await db.model_catalog.find_one({"_id": mid, "listed": True})
-        if m and all(c in (m.get("caps") or []) for c in requires):
-            prov = mid.split("/", 1)[0]
-            if prov in ready:
-                return mid, prov
+    q: dict = {"listed": True, "excluded": {"$ne": True},
+               "designations": class_name}
+    if needs:
+        q["modalities"] = {"$all": needs}
+    cands = []
+    async for m in db.model_catalog.find(q):
+        prov = m.get("provider")
+        bare = m["_id"].split("/", 1)[1]
+        if prov not in ready or prov in blocked or f"{prov}:{bare}" in blocked:
+            continue
+        cands.append(m)
+    cands.sort(key=lambda m: -(m.get("rank") or 0))
+    return cands
 
-    crit = class_doc.get("criteria") or {}
-    requires = crit.get("requires") or []
-    max_out = crit.get("max_price_out")   # USD per 1M completion tokens
-    min_ctx = crit.get("min_ctx") or 0
-    candidates = []
-    async for m in db.model_catalog.find({"listed": True}):
-        prov = m["_id"].split("/", 1)[0]
-        if prov not in ready:
-            continue
-        if requires and not all(c in (m.get("caps") or []) for c in requires):
-            continue
-        if max_out is not None:
-            po = m.get("price_out")
-            if po is None or po > max_out:
-                continue
-        if (m.get("ctx") or 0) < min_ctx:
-            continue
-        candidates.append(m)
-    if not candidates:
-        return None
-    candidates.sort(key=lambda m: (m.get("price_out") or 1e9,
-                                   m.get("price_in") or 1e9))
-    best = candidates[0]
-    return best["_id"], best["_id"].split("/", 1)[0]
 
+# ---------------- generic provider call + failover ----------------
 
 async def call_provider(provider_doc: dict, model_id: str, job: dict) -> dict:
     """Generic OpenAI-compatible chat completion. model_id is the catalog
@@ -102,34 +139,62 @@ async def call_provider(provider_doc: dict, model_id: str, job: dict) -> dict:
                           "parameters": t.get("parameters", {})}}
             for t in job["tools"]
         ]
-    async with httpx.AsyncClient(timeout=180) as c:
-        r = await c.post(f"{base}/chat/completions", headers=headers, json=payload)
-        if r.status_code != 200:
-            raise RuntimeError(f"provider {r.status_code}: {r.text[:300]}")
-        return r.json()
+    try:
+        async with httpx.AsyncClient(timeout=180) as c:
+            r = await c.post(f"{base}/chat/completions", headers=headers,
+                             json=payload)
+    except httpx.HTTPError as e:
+        raise ProviderError(f"connection: {e}") from e
+    if r.status_code == 429:
+        raise RateLimited(r.headers.get("retry-after", "60"))
+    if r.status_code != 200:
+        raise ProviderError(f"provider {r.status_code}: {r.text[:200]}")
+    return r.json()
 
 
-async def meter(job: dict, model_id: str, provider: str, resp: dict,
-                queue_wait_s: float, status: str):
-    usage = resp.get("usage") or {}
-    tin = usage.get("prompt_tokens") or 0
-    tout = usage.get("completion_tokens") or 0
-    cat = await db.model_catalog.find_one({"_id": model_id}) or {}
-    pin = (cat.get("price_in") if cat.get("price_in") is not None
-           else DEFAULT_PRICES["in"]) / 1_000_000
-    pout = (cat.get("price_out") if cat.get("price_out") is not None
-            else DEFAULT_PRICES["out"]) / 1_000_000
+async def run_with_failover(job: dict) -> tuple[dict, str]:
+    """Walk the ranked candidate list; cooldown-block failures, next model."""
+    needs = job.get("needs") or detect_needs(job.get("messages"))
+    cands = await select_candidates(job["class"], needs)
+    if not cands:
+        raise ProviderError("no model available for class "
+                            f"{job['class']!r} (needs={needs or 'any'})")
+    tried = []
+    for m in cands[:4]:
+        prov_name = m["provider"]
+        provider_doc = (await ready_providers()).get(prov_name)
+        if not provider_doc:
+            continue
+        tried.append(m["_id"])
+        try:
+            resp = await call_provider(provider_doc, m["_id"], job)
+            await mark_ok(prov_name)
+            return resp, m["_id"]
+        except RateLimited as e:
+            wait = int(float(str(e) or 60) or 60)
+            await mark_blocked(f"{prov_name}:{m['_id'].split('/', 1)[1]}",
+                               min(wait, 900), "429 rate limited")
+        except ProviderError as e:
+            await mark_blocked(f"{prov_name}:{m['_id'].split('/', 1)[1]}",
+                               30, str(e))
+    raise ProviderError(f"all candidates failed: {', '.join(tried)}")
+
+
+# ---------------- metering + history (R34; tokens only, no pricing) ----
+
+async def meter(job: dict, model_id: str, status: str, queue_wait_s: float):
+    usage = (job.get("result") or {}).get("usage") or {}
     await db.usage_events.insert_one({
         "_id": f"use_{job['_id'][4:]}",
         "job_id": job["_id"],
         "agent_id": job["agent_id"],
         "class": job["class"],
         "model": model_id,
-        "provider": provider,
-        "tokens_in": tin,
-        "tokens_out": tout,
-        "tokens_total": tin + tout,
-        "cost_est": round(tin * pin + tout * pout, 6),
+        "provider": model_id.split("/", 1)[0] if "/" in model_id else None,
+        "tokens_in": usage.get("prompt_tokens") or 0,
+        "tokens_out": usage.get("completion_tokens") or 0,
+        "tokens_total": (usage.get("prompt_tokens") or 0)
+                        + (usage.get("completion_tokens") or 0),
         "queue_wait_s": round(queue_wait_s, 3),
         "status": status,
         "ts": now(),
@@ -137,29 +202,19 @@ async def meter(job: dict, model_id: str, provider: str, resp: dict,
 
 
 async def process_job(job: dict):
-    cls = await db.task_classes.find_one({"_id": job["class"]})
-    resolved = await resolve_model(cls or {})
-    if not resolved:
-        await db.jobs.update_one({"_id": job["_id"]}, {"$set": {
-            "status": "failed", "error": "no model available for class",
-            "finished_at": now()}})
-        return
-    model_id, provider = resolved
-    provider_doc = (await ready_providers()).get(provider)
     await db.jobs.update_one({"_id": job["_id"]}, {"$set": {
-        "status": "dispatched", "dispatched_at": now(), "model": model_id,
-        "provider": provider}})
+        "status": "dispatched", "dispatched_at": now()}})
     queue_wait = (time.time() - job["created_at"].timestamp()
                   if job.get("created_at") else 0.0)
     try:
-        resp = await call_provider(provider_doc, model_id, job)
-        await meter(job, model_id, provider, resp, queue_wait, "ok")
-        # R34: full history per job
-        await db.history.insert_one({
+        resp, model_id = await run_with_failover(job)
+        await db.jobs.update_one({"_id": job["_id"]}, {"$set": {
+            "model": model_id, "result": resp}})
+        await meter({**job, "result": resp}, model_id, "ok", queue_wait)
+        await db.history.insert_one({  # R34: full content history
             "_id": job["_id"],
             "agent_id": job["agent_id"],
             "model": model_id,
-            "provider": provider,
             "messages": job["messages"],
             "tools": job.get("tools", []),
             "response": resp.get("choices", []),
@@ -167,14 +222,12 @@ async def process_job(job: dict):
             "ts": now(),
         })
         await db.jobs.update_one({"_id": job["_id"]}, {"$set": {
-            "status": "done", "result": resp, "finished_at": now()}})
+            "status": "done", "finished_at": now()}})
     except Exception as e:  # noqa: BLE001
-        try:
-            await meter(job, model_id, provider, {}, queue_wait, "error")
-        except Exception:  # noqa: BLE001
-            pass
+        await meter(job, job.get("model") or "?", "error", queue_wait)
         await db.jobs.update_one({"_id": job["_id"]}, {"$set": {
-            "status": "failed", "error": str(e)[:500], "finished_at": now()}})
+            "status": "failed", "error": str(e)[:500],
+            "finished_at": now()}})
 
 
 async def worker_loop():
@@ -189,9 +242,6 @@ async def worker_loop():
             if not job:
                 await asyncio.sleep(0.25)
                 continue
-            # re-mark queued so process_job owns the state machine cleanly
-            await db.jobs.update_one({"_id": job["_id"]},
-                                     {"$set": {"status": "queued"}})
             await process_job(job)
         except asyncio.CancelledError:
             raise
@@ -199,11 +249,14 @@ async def worker_loop():
             await asyncio.sleep(1)
 
 
+# ---------------- catalog refresh (providers are data) ----------------
+
 async def refresh_catalog() -> int:
-    """Pull the live model list from every READY provider and upsert the
-    catalog (prices per 1M tokens, capabilities, context). Deployments with
-    no configured providers keep an empty catalog — jobs then fail with a
-    clear 'no model available' instead of calling something unconfigured."""
+    """Pull the live model list from every READY provider. Stores input
+    modalities where the provider reports them; prices are NOT stored
+    (R31b: rank + exclusions decide, not cost). New models default to
+    designations ['task'], rank 0 — an admin promotes models to 'agent'
+    and sets ranks in the dashboard."""
     n = 0
     ready = await ready_providers()
     for name, p in ready.items():
@@ -218,30 +271,16 @@ async def refresh_catalog() -> int:
             mid = m["id"]
             if ":batch" in mid or ":free" in mid:
                 continue
-            pr = m.get("pricing") or {}  # OpenRouter-style per-token pricing
-            pin = pout = None
-            try:
-                p = float(pr.get("prompt", "nan")) * 1_000_000
-                q = float(pr.get("completion", "nan")) * 1_000_000
-                # providers use negative sentinels for "dynamic/unknown" —
-                # store as null so such models never win cheapest-first
-                pin = p if p > 0 else None
-                pout = q if q > 0 else None
-            except (TypeError, ValueError):
-                pass  # plain OpenAI /models has no pricing → default prices
-            caps = []
-            nm = mid.lower()
-            if any(s in nm for s in ("claude", "gpt-4", "gpt-5", "gpt-6",
-                                     "gemini", "llama")):
-                caps.append("vision")
-            if any(s in nm for s in ("sonnet", "gpt-4.1", "gpt-5", "gpt-6",
-                                     "gemini-2.5", "o4", "deepseek")):
-                caps.append("reasoning")
+            arch = m.get("architecture") or {}
+            mods = [x for x in (arch.get("input_modalities") or [])
+                    if x in ("text", "image", "audio", "video", "file")]
             await db.model_catalog.update_one(
                 {"_id": f"{name}/{mid}"},
-                {"$set": {"provider": name, "listed": True, "caps": caps,
-                          "ctx": m.get("context_length"),
-                          "price_in": pin, "price_out": pout}},
+                {"$set": {"provider": name, "listed": True,
+                          "modalities": mods,
+                          "ctx": m.get("context_length")},
+                 "$setOnInsert": {"designations": ["task"], "rank": 0,
+                                  "excluded": False}},
                 upsert=True)
             n += 1
     # models of providers that lost their key/config get unlisted

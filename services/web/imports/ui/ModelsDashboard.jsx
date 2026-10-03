@@ -4,7 +4,6 @@ import { useTracker } from 'meteor/react-meteor-data';
 import { TaskClasses, Providers, ModelCatalog } from '../proxyCollections.js';
 
 const call = (path, method, body) => Meteor.callAsync('proxy.admin', path, method, body);
-const fmtUsd1M = (p) => (p == null ? '—' : `$${p.toFixed(2)}/M`);
 
 function ProvidersTab() {
   const { providers, ready } = useTracker(() => {
@@ -89,92 +88,92 @@ function ClassesTab() {
     const s = Meteor.subscribe('proxyClasses');
     return { classes: TaskClasses.find().fetch(), ready: s.ready() };
   }, []);
-  const [form, setForm] = useState({ id: '', max_price_out: '8', requires: '' });
-  const [msg, setMsg] = useState(null);
-  const [err, setErr] = useState(null);
-
-  const run = async (fn) => {
-    setMsg(null); setErr(null);
-    try { setMsg(await fn()); } catch (ex) { setErr(ex.reason || ex.message); }
-  };
-
   return (
     <div>
-      <h3>Task classes</h3>
-      {msg && <p className="ok-msg">{msg}</p>}
-      {err && <p className="err-msg">{err}</p>}
+      <h3>Classes</h3>
+      <p className="muted small">
+        A class is a designation models can carry. Selection = designation → modality
+        (request needs image/audio/video/file) → availability (rate limits, errors) →
+        highest rank. Rank and designations are set per model in the catalog tab.
+      </p>
       <table className="usage-table">
-        <thead><tr><th>Class</th><th>Criteria</th><th>Default</th><th /></tr></thead>
+        <thead><tr><th>Class</th><th>Description</th><th>Default</th></tr></thead>
         <tbody>
           {classes.map((c) => (
             <tr key={c._id}>
               <td>{c._id}</td>
-              <td className="mono">{JSON.stringify(c.criteria)}</td>
+              <td>{c.description}</td>
               <td>{c.default ? 'yes' : ''}</td>
-              <td>{!c.default && (
-                <button className="btn small danger" onClick={() => run(async () => {
-                  await call(`/admin/classes/${encodeURIComponent(c._id)}`, 'DELETE');
-                  return `Class ${c._id} deleted`;
-                })}>delete</button>
-              )}</td>
             </tr>
           ))}
           {ready && classes.length === 0 && (
-            <tr><td colSpan={4} className="muted">No classes — the proxy seeds four defaults on startup.</td></tr>
+            <tr><td colSpan={3} className="muted">No classes — the proxy seeds agent/task on startup.</td></tr>
           )}
         </tbody>
       </table>
-      <h4>Add / update class</h4>
-      <form onSubmit={(e) => { e.preventDefault(); run(async () => {
-        await call(`/admin/classes/${encodeURIComponent(form.id)}`, 'PUT', {
-          description: '',
-          criteria: {
-            max_price_out: form.max_price_out === '' ? null : Number(form.max_price_out),
-            requires: form.requires.split(',').map((s) => s.trim()).filter(Boolean),
-          },
-          models: null,
-          default: false,
-        });
-        setForm({ id: '', max_price_out: '8', requires: '' });
-        return `Class ${form.id} saved.`;
-      }); }} className="provider-form">
-        <input placeholder="class name (e.g. deep-research)" value={form.id}
-               onChange={(e) => setForm({ ...form, id: e.target.value })} />
-        <input placeholder="max $/1M output tokens (blank = none)" value={form.max_price_out}
-               onChange={(e) => setForm({ ...form, max_price_out: e.target.value })} />
-        <input placeholder="required caps, comma-sep (e.g. vision, reasoning)" value={form.requires}
-               onChange={(e) => setForm({ ...form, requires: e.target.value })} />
-        <button className="btn" type="submit">Save class</button>
-      </form>
     </div>
   );
 }
 
 function CatalogTab() {
   const { models, ready } = useTracker(() => {
-    const s = Meteor.subscribe('proxyCatalog', 200);
-    // nulls (dynamic/unknown pricing) sort after priced models
+    const s = Meteor.subscribe('proxyCatalog', 400);
     const sorted = ModelCatalog.find().fetch()
-      .sort((a, b) => (a.price_out ?? Infinity) - (b.price_out ?? Infinity));
+      .sort((a, b) => (b.rank || 0) - (a.rank || 0) || (a._id < b._id ? -1 : 1));
     return { models: sorted, ready: s.ready() };
   }, []);
+  const [msg, setMsg] = useState(null);
+  const [err, setErr] = useState(null);
+
+  const setPolicy = async (id, body, note) => {
+    setMsg(null); setErr(null);
+    try {
+      await call(`/admin/models/${id}/policy`, 'PUT', body);
+      setMsg(note);
+    } catch (ex) { setErr(ex.reason || ex.message); }
+  };
+
   return (
     <div>
       <h3>Model catalog ({models.length} listed)</h3>
-      <p className="muted small">Cheapest first. Live from the providers&apos; /models endpoints — refresh pulls anew.</p>
+      {msg && <p className="ok-msg">{msg}</p>}
+      {err && <p className="err-msg">{err}</p>}
+      <p className="muted small">
+        Ranked first. designations: a = agent loop, t = auxiliary tasks. New models
+        default to task/rank 0 — promote and rank the ones you trust.
+      </p>
       <table className="usage-table">
-        <thead><tr><th>Model</th><th>Provider</th><th>$/1M in</th><th>$/1M out</th><th>Context</th><th>Caps</th></tr></thead>
+        <thead><tr><th>Model</th><th>Desig.</th><th>Rank</th><th>Input modalities</th><th>Context</th><th>Actions</th></tr></thead>
         <tbody>
-          {models.map((m) => (
-            <tr key={m._id}>
-              <td className="mono">{m._id}</td>
-              <td>{m.provider}</td>
-              <td>{fmtUsd1M(m.price_in)}</td>
-              <td>{fmtUsd1M(m.price_out)}</td>
-              <td>{m.ctx ? m.ctx.toLocaleString() : '—'}</td>
-              <td>{(m.caps || []).join(', ')}</td>
-            </tr>
-          ))}
+          {models.map((m) => {
+            const des = m.designations || [];
+            return (
+              <tr key={m._id} style={m.excluded ? { opacity: 0.45 } : undefined}>
+                <td className="mono">{m._id}</td>
+                <td>{des.includes('agent') ? 'a' : ''}{des.includes('task') ? 't' : ''}</td>
+                <td>
+                  <input className="rank-input" type="number" defaultValue={m.rank || 0}
+                    onBlur={(e) => {
+                      const v = Number(e.target.value);
+                      if (v !== (m.rank || 0)) setPolicy(m._id, { rank: v }, `${m._id} rank → ${v}`);
+                    }} />
+                </td>
+                <td>{(m.modalities || []).join(', ')}</td>
+                <td>{m.ctx ? m.ctx.toLocaleString() : '—'}</td>
+                <td>
+                  <button className="btn small" onClick={() => setPolicy(m._id,
+                    { designations: des.includes('agent') ? ['task'] : ['agent', 'task'] },
+                    des.includes('agent') ? `${m._id} → task only` : `${m._id} → agent+task`)}>
+                    {des.includes('agent') ? '→ task only' : '→ agent+task'}
+                  </button>{' '}
+                  <button className="btn small danger" onClick={() => setPolicy(m._id,
+                    { excluded: !m.excluded }, m.excluded ? `${m._id} un-excluded` : `${m._id} excluded`)}>
+                    {m.excluded ? 'un-exclude' : 'exclude'}
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
           {!ready && <tr><td colSpan={6} className="muted">loading…</td></tr>}
         </tbody>
       </table>

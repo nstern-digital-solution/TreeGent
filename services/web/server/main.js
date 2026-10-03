@@ -89,14 +89,16 @@ Meteor.publish('proxyProviders', function () {
 Meteor.publish('proxyCatalog', function (limit) {
   if (!this.userId) return this.ready();
   return ModelCatalog.find({ listed: true },
-    { sort: { price_out: 1 }, limit: Math.min(limit || 100, 500) });
+    { sort: { rank: -1 }, limit: Math.min(limit || 400, 800),
+      fields: { provider: 1, designations: 1, rank: 1, modalities: 1,
+                excluded: 1, ctx: 1 } });
 });
 
 Meteor.publish('proxyUsage', function (days) {
   if (!this.userId) return this.ready();
   const cutoff = new Date(Date.now() - (days || 7) * 86400 * 1000);
   return UsageEvents.find({ ts: { $gte: cutoff } },
-    { fields: { agent_id: 1, tokens_in: 1, tokens_out: 1, cost_est: 1,
+    { fields: { agent_id: 1, tokens_in: 1, tokens_out: 1,
                 status: 1, model: 1, provider: 1, ts: 1, class: 1 } });
 });
 

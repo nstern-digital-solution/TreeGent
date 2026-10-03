@@ -20,7 +20,7 @@ class ToolDef(BaseModel):
 
 
 class JobIn(BaseModel):
-    class_name: str = "standard"
+    class_name: str = "agent"
     messages: list[dict]
     tools: list[ToolDef] = Field(default_factory=list)
     max_tokens: int = 4096
@@ -78,7 +78,7 @@ async def priority(agent_id: str, reason: str) -> float:
 
 
 @router.post("/jobs", status_code=201)
-async def submit_job(body: JobIn, agent: dict = Depends(auth_agent)):
+async def submit_job(body: JobIn, agent: dict = Depends(auth_agent)) -> dict:
     aid = agent["agent_id"]
 
     # R32 serialization: reject a second in-flight job per agent
@@ -88,8 +88,7 @@ async def submit_job(body: JobIn, agent: dict = Depends(auth_agent)):
         raise HTTPException(409, "agent already has an in-flight generation "
                                  "(R32: one at a time; queue at the turn level)")
 
-    cls = await db.task_classes.find_one({"_id": body.class_name})
-    if not cls:
+    if not await db.task_classes.find_one({"_id": body.class_name}):
         raise HTTPException(400, f"unknown class {body.class_name!r}")
 
     prio = await priority(aid, body.reason)

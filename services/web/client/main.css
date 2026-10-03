@@ -69,3 +69,4 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f6f8fa; color
 .provider-form { display: flex; flex-direction: column; gap: .5rem; max-width: 480px; }
 .provider-form input { padding: .45rem .6rem; border: 1px solid #c9d1d9; border-radius: 6px; }
 .small { font-size: .75rem; }
+.rank-input { width: 4.5rem; padding: .15rem .3rem; border: 1px solid #c9d1d9; border-radius: 4px; font-size: .8rem; }

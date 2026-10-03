@@ -37,18 +37,10 @@ async def seed_defaults() -> None:
     creates (base_url + key_env) or seeds via TG_PROXY_PROVIDER_BOOTSTRAP_JSON."""
     if await db.task_classes.count_documents({}) == 0:
         await db.task_classes.insert_many([
-            {"_id": "cheap", "default": False,
-             "description": "fast, low-cost turns (heartbeats, trivial replies)",
-             "criteria": {"max_price_out": 1.0, "requires": []}},
-            {"_id": "standard", "default": True,
-             "description": "normal work turns",
-             "criteria": {"max_price_out": 8.0, "requires": []}},
-            {"_id": "reasoning", "default": False,
-             "description": "hard tasks needing strong reasoning",
-             "criteria": {"max_price_out": 25.0, "requires": ["reasoning"]}},
-            {"_id": "vision", "default": False,
-             "description": "image input required",
-             "criteria": {"max_price_out": 25.0, "requires": ["vision"]}},
+            {"_id": "agent", "default": True,
+             "description": "models designated for agent-loop usage"},
+            {"_id": "task", "default": False,
+             "description": "models for short auxiliary tasks"},
         ])
     # generic provider bootstrap (any deployment, via env; JSON array of
     # {_id, kind, base_url, key_env} rows) — providers are DATA, never code
