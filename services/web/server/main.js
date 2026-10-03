@@ -2,10 +2,12 @@ import { Meteor } from 'meteor/meteor';
 import { Accounts } from 'meteor/accounts-base';
 import { Actors, Conversations, Messages } from '../imports/collections.js';
 import { TaskClasses, Providers, ModelCatalog, UsageEvents } from '../imports/proxyCollections.js';
+import { Mailboxes, MailMessages, Approvals } from '../imports/mailCollections.js';
 
 const CHAT_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.private.chatUrl) || 'http://127.0.0.1:8000';
 const SERVICE_TOKEN = (Meteor.settings && Meteor.settings.private && Meteor.settings.private.serviceToken) || 'dev-service-token';
 const PROXY_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.proxyUrl) || 'http://127.0.0.1:8001';
+const MAIL_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.mailUrl) || 'http://127.0.0.1:8002';
 
 // --- helpers (Meteor 3: async collection access on the server) -----------
 
@@ -100,6 +102,25 @@ Meteor.publish('proxyUsage', function (days) {
   return UsageEvents.find({ ts: { $gte: cutoff } },
     { fields: { agent_id: 1, tokens_in: 1, tokens_out: 1,
                 status: 1, model: 1, provider: 1, ts: 1, class: 1 } });
+});
+
+// --- mail + approvals (M3) ----------------------------------------------
+
+Meteor.publish('mailboxesData', function () {
+  if (!this.userId) return this.ready();
+  return Mailboxes.find();
+});
+
+Meteor.publish('mailMessages', function (mailboxId) {
+  if (!this.userId || !mailboxId) return this.ready();
+  return MailMessages.find({ mailbox_id: mailboxId },
+    { sort: { ts: -1 }, limit: 100 });
+});
+
+Meteor.publish('approvalsData', function () {
+  if (!this.userId) return this.ready();
+  // humans see all approvals (they are the approvers/admins in v1)
+  return Approvals.find({}, { sort: { created_at: -1 }, limit: 200 });
 });
 
 // --- accounts bootstrap (R28: admin-provisioned) -----------------------
@@ -197,6 +218,25 @@ Meteor.methods({
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Meteor.Error('proxy-api', `${res.status}: ${
+        typeof data.detail === 'string' ? data.detail : JSON.stringify(data)}`);
+    }
+    return data;
+  },
+
+  async 'mail.api'(path, method, body, actorId) {
+    check(path, String); check(method, String);
+    const caller = await Meteor.userAsync();
+    if (!caller) throw new Meteor.Error('forbidden', 'login required');
+    let url = `${MAIL_URL}${path}`;
+    if (actorId) url += (path.includes('?') ? '&' : '?') + `actor_id=${encodeURIComponent(actorId)}`;
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Meteor.Error('mail-api', `${res.status}: ${
         typeof data.detail === 'string' ? data.detail : JSON.stringify(data)}`);
     }
     return data;

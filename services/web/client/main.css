@@ -70,3 +70,10 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f6f8fa; color
 .provider-form input { padding: .45rem .6rem; border: 1px solid #c9d1d9; border-radius: 6px; }
 .small { font-size: .75rem; }
 .rank-input { width: 4.5rem; padding: .15rem .3rem; border: 1px solid #c9d1d9; border-radius: 4px; font-size: .8rem; }
+/* --- M3 mail + approvals ------------------------------------------------ */
+.mail-layout { border: 1px solid #d0d7de; border-radius: 8px; background: #fff; }
+.mail-main { flex: 1; padding: 1rem; overflow-y: auto; }
+.compose-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.compose-card { display: flex; flex-direction: column; gap: .5rem; width: 420px; }
+.compose-card input, .compose-card textarea, .compose-card select { padding: .45rem .6rem; border: 1px solid #c9d1d9; border-radius: 6px; }
+.reason-input { padding: .3rem .5rem; border: 1px solid #c9d1d9; border-radius: 4px; width: 220px; }

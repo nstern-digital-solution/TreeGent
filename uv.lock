@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 [manifest]
 members = [
     "treegent-chat",
+    "treegent-mail",
     "treegent-proxy",
 ]
 
@@ -428,6 +429,27 @@ requires-dist = [
     { name = "motor", specifier = ">=3.6" },
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "uvicorn", specifier = ">=0.32" },
+]
+
+[[package]]
+name = "treegent-mail"
+version = "0.1.0"
+source = { virtual = "services/mail" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "motor" },
+    { name = "pydantic-settings" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "motor", specifier = ">=3.5" },
+    { name = "pydantic-settings", specifier = ">=2.4" },
+    { name = "uvicorn", specifier = ">=0.30" },
 ]
 
 [[package]]
