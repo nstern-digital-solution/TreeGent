@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
+from treegent_common.auth import authenticate
 from treegent_common.perms import can, principal_for, resource_for
 
 from . import adapters
@@ -14,6 +15,15 @@ from .config import (actors, approvals, db, mail_messages, mailboxes,
                      settings)
 
 router = APIRouter(tags=["mail"])
+
+
+async def caller_actor(
+    x_agent_key: str = Header(default=""),
+    x_service_token: str = Header(default=""),
+    x_actor_id: str = Header(default=""),
+) -> dict:
+    return await authenticate(db, settings.service_token,
+                              x_agent_key, x_service_token, x_actor_id)
 
 
 async def require_service(x_service_token: str = Header(default="")) -> None:
@@ -42,7 +52,7 @@ class MailboxIn(BaseModel):
     members: list[str] = []         # shared: agent actor ids
 
 
-@router.get("/mailboxes", dependencies=[Depends(require_service)])
+@router.get("/mailboxes")
 async def list_mailboxes(caller_id: str = ""):
     """R40 own-scope LISTING: only mailboxes the caller owns or is a member
     of. Superior reach-down never appears here — it happens on a NAMED
@@ -63,7 +73,7 @@ async def list_mailboxes(caller_id: str = ""):
 
 
 @router.post("/mailboxes", status_code=201,
-             dependencies=[Depends(require_service)])
+             )
 async def create_mailbox(body: MailboxIn):
     if body.kind not in ("personal", "shared"):
         raise HTTPException(400, "kind must be personal or shared")
@@ -92,7 +102,7 @@ async def create_mailbox(body: MailboxIn):
 
 
 @router.get("/mailboxes/{mbx_id}/messages",
-            dependencies=[Depends(require_service)])
+            )
 async def list_messages(mbx_id: str, limit: int = 50, caller_id: str = ""):
     mb = await mailboxes.find_one({"_id": mbx_id})
     if not mb:
@@ -123,14 +133,14 @@ class SendIn(BaseModel):
     mode: str = "background"       # R39: background | foreground
 
 
-@router.post("/send", status_code=201,
-             dependencies=[Depends(require_service)])
-async def send(body: SendIn):
+@router.post("/send", status_code=201)
+async def send(body: SendIn, _c: dict = Depends(caller_actor)):
     """R25: agents NEVER send directly — create mail + approval; the
     approver (requester's superior) decides via /approvals."""
     mbx = await mailboxes.find_one({"address": body.from_mailbox})
     if not mbx:
         raise HTTPException(404, f"no mailbox {body.from_mailbox!r}")
+    body.requester_id = _c["_id"]  # R45: derived, never claimed
     requester = await actors.find_one({"_id": body.requester_id})
     if not requester or requester.get("kind") != "agent":
         raise HTTPException(400, "requester must be an agent actor id")
@@ -183,17 +193,18 @@ class DecideIn(BaseModel):
     reason: str = ""
 
 
-@router.get("/approvals", dependencies=[Depends(require_service)])
-async def list_approvals(actor_id: str | None = None, scope: str = "inbox"):
+@router.get("/approvals")
+async def list_approvals(scope: str = "inbox", _c: dict = Depends(caller_actor)):
     """R40-scoped: inbox = pending where I'm approver; requested = mine;
-    without actor_id = everything I can see (approver/requester/subtree/admin)."""
+    scope=all: everything I can see (approver/requester/subtree)."""
     if scope == "inbox":
-        q = {"approver_id": actor_id, "status": "pending"}
+        q = {"approver_id": _c["_id"], "status": "pending"}
     elif scope == "requested":
-        q = {"requester_id": actor_id}
+        q = {"requester_id": _c["_id"]}
     else:
         q = {}
     out = []
+    actor_id = _c["_id"]  # R45: derived, never claimed
     p = await principal_for(db, actor_id) if actor_id else None
     async for a in approvals.find(q).sort("created_at", 1).limit(200):
         if p:
@@ -211,8 +222,8 @@ async def list_approvals(actor_id: str | None = None, scope: str = "inbox"):
 
 
 @router.post("/approvals/{appr_id}/decide",
-             dependencies=[Depends(require_service)])
-async def decide(appr_id: str, body: DecideIn, actor_id: str = ""):
+             )
+async def decide(appr_id: str, body: DecideIn, _c: dict = Depends(caller_actor)):
     """Approver decides. Approve → adapter dispatches the mail for real.
     Reject → reason flows back to the requester as a wake event."""
     a = await approvals.find_one({"_id": appr_id})
@@ -220,11 +231,10 @@ async def decide(appr_id: str, body: DecideIn, actor_id: str = ""):
         raise HTTPException(404, "no such approval")
     if a["status"] != "pending":
         raise HTTPException(409, f"already {a['status']}")
-    if actor_id:
-        p = await principal_for(db, actor_id)
-        if not await can(db, p, "approvals.decide",
-                         {"owners": [a["approver_id"]]}):
-            raise HTTPException(403, "not allowed to decide this approval")
+    p = await principal_for(db, _c["_id"])  # R45: derived
+    if not await can(db, p, "approvals.decide",
+                     {"owners": [a["approver_id"]]}):
+        raise HTTPException(403, "not allowed to decide this approval")
     if body.decision not in ("approve", "reject"):
         raise HTTPException(400, "decision must be approve or reject")
 
@@ -271,7 +281,7 @@ async def decide(appr_id: str, body: DecideIn, actor_id: str = ""):
 
 # ---------------- inbound simulate (dev) + adapters ----------------
 
-@router.post("/internal/inbound", dependencies=[Depends(require_service)])
+@router.post("/internal/inbound")
 async def inbound_hook(address: str, from_addr: str, subject: str,
                        text: str = "", html: str = ""):
     """Dev/test hook: simulate an inbound email (real inbound = Resend
@@ -280,7 +290,7 @@ async def inbound_hook(address: str, from_addr: str, subject: str,
                                          text, html)
 
 
-@router.get("/adapters", dependencies=[Depends(require_service)])
+@router.get("/adapters")
 async def list_adapters():
     return [{"id": r["_id"], "direction": r["direction"], "kind": r["kind"],
              "enabled": r.get("enabled", True)}
@@ -288,7 +298,7 @@ async def list_adapters():
 
 
 @router.put("/adapters/{adapter_id}", status_code=201,
-            dependencies=[Depends(require_service)])
+            )
 async def upsert_adapter(adapter_id: str, direction: str, kind: str,
                          enabled: bool = True):
     if direction not in ("outbound", "inbound"):

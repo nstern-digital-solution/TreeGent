@@ -1,7 +1,9 @@
 pyproject.toml
 treegent_common/__init__.py
+treegent_common/auth.py
 treegent_common/perms.py
 treegent_common.egg-info/PKG-INFO
 treegent_common.egg-info/SOURCES.txt
 treegent_common.egg-info/dependency_links.txt
+treegent_common.egg-info/requires.txt
 treegent_common.egg-info/top_level.txt

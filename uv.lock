@@ -1197,6 +1197,12 @@ requires-dist = [
 name = "treegent-common"
 version = "0.1.0"
 source = { editable = "packages/treegent-common" }
+dependencies = [
+    { name = "fastapi" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "fastapi", specifier = ">=0.115" }]
 
 [[package]]
 name = "treegent-files"

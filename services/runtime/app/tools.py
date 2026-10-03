@@ -23,11 +23,9 @@ class Services:
     async def _call(self, base: str, path: str, method: str = "GET",
                     body: dict | None = None, params: dict | None = None,
                     timeout: float = 60.0) -> dict:
-        headers = {"X-Agent-Key": self.key,
-                   "X-Service-Token": settings.service_token}
-        # chat still runs the M1 trusted-caller model (R45 migration pending)
-        if self.agent_id:
-            headers["X-Actor-Id"] = self.agent_id
+        # R45: the agent key IS the credential; services derive identity
+        # from it. No shared token, no claimed actor id.
+        headers = {"X-Agent-Key": self.key}
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.request(method, f"{base}{path}", headers=headers,
                                 json=body, params=params)

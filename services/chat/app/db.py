@@ -11,6 +11,7 @@ messages = db.messages
 inbox = db.inbox
 wake_events = db.wake_events
 counters = db.counters
+agent_keys = db.agent_keys
 
 INDEXES = [
     (actors, [("username", 1)], True),

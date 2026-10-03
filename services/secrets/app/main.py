@@ -5,6 +5,7 @@ Fernet-encrypted at rest and only decrypted for an authorized read."""
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from treegent_common.auth import authenticate
 from pydantic import BaseModel, Field
 from treegent_common.perms import can, principal_for, resource_for
 
@@ -12,6 +13,17 @@ from . import crypto
 from .config import db, secrets_col, settings
 
 router = APIRouter(tags=["secrets"])
+
+
+async def caller_actor(
+    x_agent_key: str = Header(default=""),
+    x_service_token: str = Header(default=""),
+    x_actor_id: str = Header(default=""),
+) -> dict:
+    """R45: agent key derives identity (claims ignored); central tier =
+    shared token + declared actor (web server only)."""
+    return await authenticate(db, settings.service_token,
+                              x_agent_key, x_service_token, x_actor_id)
 
 
 async def require_service(x_service_token: str = Header(default="")) -> None:
@@ -44,13 +56,12 @@ async def _with_ancestors(s: dict) -> dict:
 
 # ---------------- list / search (own-scope, metadata-only) ----------------
 
-@router.get("/secrets", dependencies=[Depends(require_service)])
-async def list_secrets(caller_id: str = "", q: str = ""):
+@router.get("/secrets")
+async def list_secrets(CLAIM_CALLER: str = "", q: str = "", _c: dict = Depends(caller_actor)):
     """Own-scope listing/search by name/username/url — NEVER returns
     values, NEVER returns items the caller merely has reach-down rights
     to (R40: superiors search their own secrets, not subordinates')."""
-    if not caller_id:
-        raise HTTPException(401, "caller_id required")
+    caller_id = _c["_id"]  # R45: derived, never claimed
     p = await principal_for(db, caller_id)
     query: dict = {"$or": [{"owner": caller_id},
                            {"shared_with": caller_id}]}
@@ -77,10 +88,9 @@ class SecretIn(BaseModel):
 
 
 @router.post("/secrets", status_code=201,
-             dependencies=[Depends(require_service)])
-async def create_secret(body: SecretIn, caller_id: str = ""):
-    if not caller_id:
-        raise HTTPException(401, "caller_id required")
+             )
+async def create_secret(body: SecretIn, CLAIM_CALLER: str = "", _c: dict = Depends(caller_actor)):
+    caller_id = _c["_id"]  # R45: derived, never claimed
     # sharing grants access to the named actor's own scope
     doc = {
         "_id": f"sec_{abs(hash((caller_id, body.name, now().isoformat()))) % 10**16:016d}",
@@ -93,10 +103,9 @@ async def create_secret(body: SecretIn, caller_id: str = ""):
     return spub_meta(doc)
 
 
-@router.put("/secrets/{sec_id}", dependencies=[Depends(require_service)])
-async def update_secret(sec_id: str, body: SecretIn, caller_id: str = ""):
-    if not caller_id:
-        raise HTTPException(401, "caller_id required")
+@router.put("/secrets/{sec_id}")
+async def update_secret(sec_id: str, body: SecretIn, CLAIM_CALLER: str = "", _c: dict = Depends(caller_actor)):
+    caller_id = _c["_id"]  # R45: derived, never claimed
     s = await secrets_col.find_one({"_id": sec_id})
     if not s:
         raise HTTPException(404, "no such secret")
@@ -115,10 +124,9 @@ async def update_secret(sec_id: str, body: SecretIn, caller_id: str = ""):
     return spub_meta(s)
 
 
-@router.delete("/secrets/{sec_id}", dependencies=[Depends(require_service)])
-async def delete_secret(sec_id: str, caller_id: str = ""):
-    if not caller_id:
-        raise HTTPException(401, "caller_id required")
+@router.delete("/secrets/{sec_id}")
+async def delete_secret(sec_id: str, CLAIM_CALLER: str = "", _c: dict = Depends(caller_actor)):
+    caller_id = _c["_id"]  # R45: derived, never claimed
     s = await secrets_col.find_one({"_id": sec_id})
     if not s:
         raise HTTPException(404, "no such secret")
@@ -132,13 +140,12 @@ async def delete_secret(sec_id: str, caller_id: str = ""):
 
 # ---------------- value read (named secret, reach-down allowed) ----------
 
-@router.get("/secrets/{sec_id}/value", dependencies=[Depends(require_service)])
-async def read_value(sec_id: str, caller_id: str = ""):
+@router.get("/secrets/{sec_id}/value")
+async def read_value(sec_id: str, CLAIM_CALLER: str = "", _c: dict = Depends(caller_actor)):
     """The ONE endpoint that decrypts. Rule secrets.read allows own/member/
     superior — a superior reads a named subordinate secret here, never
     via search."""
-    if not caller_id:
-        raise HTTPException(401, "caller_id required")
+    caller_id = _c["_id"]  # R45: derived, never claimed
     s = await secrets_col.find_one({"_id": sec_id})
     if not s:
         raise HTTPException(404, "no such secret")

@@ -6,12 +6,22 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile
 from pydantic import BaseModel
+from treegent_common.auth import authenticate
 from treegent_common.perms import can, principal_for, resource_for
 
 from . import s3
 from .config import db, files_col, settings
 
 router = APIRouter(tags=["files"])
+
+
+async def caller_actor(
+    x_agent_key: str = Header(default=""),
+    x_service_token: str = Header(default=""),
+    x_actor_id: str = Header(default=""),
+) -> dict:
+    return await authenticate(db, settings.service_token,
+                              x_agent_key, x_service_token, x_actor_id)
 
 
 async def require_service(x_service_token: str = Header(default="")) -> None:
@@ -40,10 +50,9 @@ async def check(db_, caller_id: str, perm: str, f: dict) -> None:
 
 # ---------------- listing (own-scope) ----------------
 
-@router.get("/files", dependencies=[Depends(require_service)])
-async def list_files(caller_id: str = "", q: str = ""):
-    if not caller_id:
-        raise HTTPException(401, "caller_id required")
+@router.get("/files")
+async def list_files(CLAIM_CALLER: str = "", q: str = "", _c: dict = Depends(caller_actor)):
+    caller_id = _c["_id"]  # R45: derived, never claimed
     query: dict = {"$or": [{"owner": caller_id}, {"shared_with": caller_id}]}
     if q:
         query = {"$and": [query, {"name": {"$regex": q, "$options": "i"}}]}
@@ -54,11 +63,10 @@ async def list_files(caller_id: str = "", q: str = ""):
 # ---------------- upload / download ----------------
 
 @router.post("/files", status_code=201,
-             dependencies=[Depends(require_service)])
-async def upload(file: UploadFile, caller_id: str = "",
-                 shared_with: str = ""):
-    if not caller_id:
-        raise HTTPException(401, "caller_id required")
+             )
+async def upload(file: UploadFile, CLAIM_CALLER: str = "",
+                 shared_with: str = "", _c: dict = Depends(caller_actor)):
+    caller_id = _c["_id"]  # R45: derived, never claimed
     data = await file.read()
     if len(data) > 100 * 1024 * 1024:
         raise HTTPException(413, "file too large (100 MB cap in v1)")
@@ -74,11 +82,10 @@ async def upload(file: UploadFile, caller_id: str = "",
     return fpub(doc)
 
 
-@router.get("/files/{file_id}/download", dependencies=[Depends(require_service)])
-async def download(file_id: str, caller_id: str = ""):
+@router.get("/files/{file_id}/download")
+async def download(file_id: str, CLAIM_CALLER: str = "", _c: dict = Depends(caller_actor)):
     """Streams the bytes. files.read allows own/member/superior."""
-    if not caller_id:
-        raise HTTPException(401, "caller_id required")
+    caller_id = _c["_id"]  # R45: derived, never claimed
     f = await files_col.find_one({"_id": file_id})
     if not f:
         raise HTTPException(404, "no such file")
@@ -90,12 +97,11 @@ async def download(file_id: str, caller_id: str = ""):
                              f'attachment; filename="{f["name"]}"'})
 
 
-@router.get("/files/{file_id}/url", dependencies=[Depends(require_service)])
-async def presigned_url(file_id: str, caller_id: str = "", expires_s: int = 900):
+@router.get("/files/{file_id}/url")
+async def presigned_url(file_id: str, CLAIM_CALLER: str = "", expires_s: int = 900, _c: dict = Depends(caller_actor)):
     """Presigned URL straight from the user's S3 host (for big files /
     browser downloads) — permission-checked, then time-limited."""
-    if not caller_id:
-        raise HTTPException(401, "caller_id required")
+    caller_id = _c["_id"]  # R45: derived, never claimed
     f = await files_col.find_one({"_id": file_id})
     if not f:
         raise HTTPException(404, "no such file")
@@ -104,11 +110,10 @@ async def presigned_url(file_id: str, caller_id: str = "", expires_s: int = 900)
             "expires_s": expires_s}
 
 
-@router.put("/files/{file_id}/share", dependencies=[Depends(require_service)])
-async def share(file_id: str, body: dict, caller_id: str = ""):
+@router.put("/files/{file_id}/share")
+async def share(file_id: str, body: dict, CLAIM_CALLER: str = "", _c: dict = Depends(caller_actor)):
     """Owner (or member) shares with more actors."""
-    if not caller_id:
-        raise HTTPException(401, "caller_id required")
+    caller_id = _c["_id"]  # R45: derived, never claimed
     f = await files_col.find_one({"_id": file_id})
     if not f:
         raise HTTPException(404, "no such file")
@@ -120,10 +125,9 @@ async def share(file_id: str, body: dict, caller_id: str = ""):
     return {"id": file_id, "shared_with": new}
 
 
-@router.delete("/files/{file_id}", dependencies=[Depends(require_service)])
-async def delete_file(file_id: str, caller_id: str = ""):
-    if not caller_id:
-        raise HTTPException(401, "caller_id required")
+@router.delete("/files/{file_id}")
+async def delete_file(file_id: str, CLAIM_CALLER: str = "", _c: dict = Depends(caller_actor)):
+    caller_id = _c["_id"]  # R45: derived, never claimed
     f = await files_col.find_one({"_id": file_id})
     if not f:
         raise HTTPException(404, "no such file")
