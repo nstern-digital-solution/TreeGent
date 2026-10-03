@@ -77,3 +77,6 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f6f8fa; color
 .compose-card { display: flex; flex-direction: column; gap: .5rem; width: 420px; }
 .compose-card input, .compose-card textarea, .compose-card select { padding: .45rem .6rem; border: 1px solid #c9d1d9; border-radius: 6px; }
 .reason-input { padding: .3rem .5rem; border: 1px solid #c9d1d9; border-radius: 4px; width: 220px; }
+/* --- M4 secrets ---------------------------------------------------------- */
+.secret-toolbar { display: flex; gap: .5rem; margin: .5rem 0 1rem; align-items: center; }
+.secret-toolbar input { flex: 1; max-width: 420px; padding: .4rem .6rem; border: 1px solid #c9d1d9; border-radius: 6px; }

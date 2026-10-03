@@ -10,6 +10,7 @@ import { Admin } from './Admin.jsx';
 import { UsageDashboard } from './UsageDashboard.jsx';
 import { ModelsDashboard } from './ModelsDashboard.jsx';
 import { ApprovalsPane, MailPane } from './MailPane.jsx';
+import { SecretsPane } from './SecretsPane.jsx';
 
 export function App() {
   const user = useTracker(() => Meteor.user(), []);
@@ -40,6 +41,7 @@ export function App() {
           {isAdmin && <button className={`tab ${tab === 'models' ? 'on' : ''}`} onClick={() => setTab('models')}>Models</button>}
           <button className={`tab ${tab === 'approvals' ? 'on' : ''}`} onClick={() => setTab('approvals')}>Approvals</button>
           <button className={`tab ${tab === 'mail' ? 'on' : ''}`} onClick={() => setTab('mail')}>Mail</button>
+          <button className={`tab ${tab === 'secrets' ? 'on' : ''}`} onClick={() => setTab('secrets')}>Secrets</button>
         </nav>
         <span className="me">
           {actor ? `${actor.display_name} · ${actor.kind}` : user.username}
@@ -54,6 +56,7 @@ export function App() {
       {tab === 'models' && isAdmin && <ModelsDashboard />}
       {tab === 'approvals' && <ApprovalsPane />}
       {tab === 'mail' && <MailPane />}
+      {tab === 'secrets' && <SecretsPane />}
     </div>
   );
 }

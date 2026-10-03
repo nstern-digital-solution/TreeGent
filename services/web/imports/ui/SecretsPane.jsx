@@ -1,0 +1,158 @@
+import React, { useState } from 'react';
+import { Meteor } from 'meteor/meteor';
+import { useTracker } from 'meteor/react-meteor-data';
+import { Actors } from '../collections.js';
+
+const call = (path, method, body, asActorId) =>
+  Meteor.callAsync('secrets.api', path, method, body, asActorId);
+
+export function SecretsPane() {
+  const me = useTracker(() => {
+    Meteor.subscribe('actors');
+    const u = Meteor.user();
+    return u ? Actors.findOne({ username: u.username }) : null;
+  }, []);
+  const [items, setItems] = useState(null);
+  const [q, setQ] = useState('');
+  const [msg, setMsg] = useState(null);
+  const [err, setErr] = useState(null);
+  const [reveal, setReveal] = useState(null);   // {id, name, value}
+  const [form, setForm] = useState(null);
+  const [target, setTarget] = useState('');     // reach-down: actor id to open as
+
+  const actors = useTracker(() => Actors.find().fetch(), []);
+
+  const refresh = async (query = q) => {
+    setErr(null);
+    try {
+      const r = await call(`/secrets?q=${encodeURIComponent(query)}`, 'GET');
+      setItems(r);
+    } catch (ex) { setErr(ex.reason || ex.message); }
+  };
+
+  React.useEffect(() => { if (me) refresh(''); }, [me && me._id]);
+
+  const run = async (fn) => {
+    setMsg(null); setErr(null);
+    try { setMsg(await fn()); } catch (ex) { setErr(ex.reason || ex.message); }
+  };
+
+  const revealValue = async (id) => {
+    setErr(null);
+    try {
+      const r = await call(`/secrets/${id}/value`, 'GET');
+      setReveal(r);
+      setTimeout(() => setReveal(null), 15000); // auto-hide after 15s
+    } catch (ex) { setErr(ex.reason || ex.message); }
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    await run(async () => {
+      await call('/secrets', 'POST', form);
+      setForm(null);
+      refresh('');
+      return `Secret ${form.name} saved.`;
+    });
+  };
+
+  if (!me) return <div className="page"><p className="muted">loading…</p></div>;
+
+  return (
+    <div className="page">
+      <h2>Secrets</h2>
+      {msg && <p className="ok-msg">{msg}</p>}
+      {err && <p className="err-msg">{err}</p>}
+      <p className="muted small">
+        Search shows your own + shared secrets only. Superiors open a named
+        subordinate secret via the actor picker (reach-down).
+      </p>
+      <div className="secret-toolbar">
+        <input placeholder="search name / username / url / notes" value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && refresh()} />
+        <button className="btn small" onClick={() => refresh()}>search</button>
+        <button className="btn small" onClick={() => setForm({
+          name: '', value: '', username: '', url: '', notes: '', shared_with: [],
+        })}>new secret</button>
+        <select value={target} onChange={(e) => { setTarget(e.target.value); setItems(null); }}>
+          <option value="">my scope</option>
+          {actors.filter((a) => a._id !== me._id).map((a) => (
+            <option key={a._id} value={a._id}>open as: {a.display_name}</option>
+          ))}
+        </select>
+      </div>
+      {target && (
+        <p className="muted small">
+          reach-down: showing <b>{actors.find((a) => a._id === target)?.display_name}</b>'s secrets
+          — <button className="btn small" onClick={() => run(async () => {
+            const r = await call(`/secrets`, 'GET', null, target);
+            setItems(r);
+            return `loaded ${r.length} secret(s) of ${actors.find((a) => a._id === target)?.display_name}`;
+          })}>load their list</button> (their own-scope view, metadata only)
+        </p>
+      )}
+      <table className="usage-table">
+        <thead><tr><th>Name</th><th>Username</th><th>URL</th><th>Shared with</th><th>Updated</th><th /></tr></thead>
+        <tbody>
+          {(items || []).map((s) => (
+            <tr key={s.id}>
+              <td>{s.name}</td>
+              <td className="mono">{s.username || '—'}</td>
+              <td className="mono">{s.url || '—'}</td>
+              <td>{(s.shared_with || []).length}</td>
+              <td>{s.updated_at ? new Date(s.updated_at).toLocaleDateString() : ''}</td>
+              <td>
+                <button className="btn small" onClick={() => run(async () => {
+                  const r = await call(`/secrets/${s.id}/value`, 'GET', null, target || undefined);
+                  setReveal(r);
+                  setTimeout(() => setReveal(null), 15000);
+                  return null;
+                })}>reveal</button>{' '}
+                {s.owner === me._id && (
+                  <button className="btn small danger" onClick={() => run(async () => {
+                    await call(`/secrets/${s.id}`, 'DELETE', null);
+                    refresh('');
+                    return `deleted ${s.name}`;
+                  })}>delete</button>
+                )}
+              </td>
+            </tr>
+          ))}
+          {items && items.length === 0 && (
+            <tr><td colSpan={6} className="muted">Nothing here.</td></tr>
+          )}
+        </tbody>
+      </table>
+      {reveal && (
+        <div className="compose-overlay" onClick={() => setReveal(null)}>
+          <div className="login-card compose-card" onClick={(e) => e.stopPropagation()}>
+            <h3>{reveal.name}</h3>
+            <p className="muted small">auto-hides in 15 s — click anywhere to close</p>
+            <textarea rows="4" readOnly value={reveal.value}
+              onFocus={(e) => e.target.select()} />
+            <button className="btn small" onClick={() => {
+              navigator.clipboard?.writeText(reveal.value);
+              setMsg('copied to clipboard');
+              setReveal(null);
+            }}>copy &amp; close</button>
+          </div>
+        </div>
+      )}
+      {form && (
+        <div className="compose-overlay">
+          <form className="login-card compose-card" onSubmit={save}>
+            <h3>New secret</h3>
+            <input placeholder="name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            <input placeholder="value" value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} />
+            <input placeholder="username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
+            <input placeholder="url" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} />
+            <input placeholder="notes" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+            <button className="btn" type="submit">save</button>
+            <button className="btn small" type="button" onClick={() => setForm(null)}>cancel</button>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}

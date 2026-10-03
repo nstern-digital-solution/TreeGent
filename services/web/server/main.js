@@ -241,4 +241,35 @@ Meteor.methods({
     }
     return data;
   },
+
+  async 'secrets.api'(path, method, body, asActorId) {
+    check(path, String); check(method, String);
+    const caller = await Meteor.userAsync();
+    if (!caller) throw new Meteor.Error('forbidden', 'login required');
+    const SECRETS_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.private.secretsUrl) || 'http://127.0.0.1:8003';
+    let url = `${SECRETS_URL}${path}`;
+    const myId = (await myActor(caller) || {})._id || '';
+    let actor = myId;
+    if (asActorId && asActorId !== myId) {
+      // reach-down: ONLY allowed if I am above the target in the org
+      const target = await Actors.findOneAsync({ _id: asActorId });
+      const anc = (target && target.org && target.org.ancestors) || [];
+      if (!anc.includes(myId)) {
+        throw new Meteor.Error('forbidden', 'reach-down requires superior position');
+      }
+      actor = asActorId;
+    }
+    url += (path.includes('?') ? '&' : '?') + `caller_id=${encodeURIComponent(actor)}`;
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN },
+      body: body && method !== 'GET' ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Meteor.Error('secrets-api', `${res.status}: ${
+        typeof data.detail === 'string' ? data.detail : JSON.stringify(data)}`);
+    }
+    return data;
+  },
 });
