@@ -17,17 +17,6 @@ from .config import db, settings, turns
 WAKE_POLL_S = 5
 
 
-def await_sync(coro):
-    """Run a coroutine on the supervisor's loop from sync context."""
-    import asyncio
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    fut = asyncio.run_coroutine_threadsafe(coro, loop)
-    return fut.result(timeout=10)
-
-
 def now():
     return datetime.now(timezone.utc)
 
@@ -59,22 +48,25 @@ class Agent:
         self.busy = False          # R32: one generation in flight
         self._reply_ctx = None     # sender to auto-post the final answer to
         self.last_turn_end = now()
-        self._load_life()          # spec: the chatlog is his life — persist
+        self._life_loaded = False   # spec: chatlog is his life — lazy load
 
-    def _load_life(self) -> None:
-        """Restore the continuous transcript from the agent_sessions
-        collection (one doc per agent, updated at every turn end)."""
-        doc = await_sync(db.agent_sessions.find_one({"_id": self.id}))
+    async def _load_life(self) -> None:
+        """Restore the continuous transcript from agent_sessions (one doc
+        per agent, saved at every turn end). Runs once, inside the loop."""
+        if self._life_loaded:
+            return
+        doc = await db.agent_sessions.find_one({"_id": self.id})
         if doc and doc.get("messages"):
             self.messages = doc["messages"]
+        self._life_loaded = True
 
-    def _save_life(self) -> None:
-        await_sync(db.agent_sessions.update_one(
+    async def _save_life(self) -> None:
+        await db.agent_sessions.update_one(
             {"_id": self.id},
             {"$set": {"messages": self.messages,
                       "updated_at": now(),
                       "username": self.actor.get("username")}},
-            upsert=True))
+            upsert=True)
 
     # ---------- injection contract ----------
 
@@ -150,6 +142,7 @@ class Agent:
         steps = 0
         final_text = ""
         try:
+            await self._load_life()
             if trigger == "event":
                 injections = await self.collect_injections()
                 if not injections:
@@ -246,7 +239,7 @@ class Agent:
         finally:
             self.last_turn_end = now()
             self.busy = False
-            self._save_life()
+            await self._save_life()
             if steps > 0:
                 await turns.insert_one({
                     "_id": turn_id, "agent_id": self.id, "trigger": trigger,
@@ -300,9 +293,9 @@ async def supervise(state_registry: dict | None = None) -> None:
                 inbox_row = await db.inbox.find_one(
                     {"recipient_id": aid, "delivered_at": None})
                 if has_event or inbox_row:
-                    await agent.run_turn("event")
+                    asyncio.create_task(agent.run_turn("event"))
                 elif await agent.heartbeat_due():
-                    await agent.run_turn("heartbeat")
+                    asyncio.create_task(agent.run_turn("heartbeat"))
             except Exception as e:  # noqa: BLE001
                 print(f"[supervisor] agent {agent.name} error: {e}")
         await asyncio.sleep(WAKE_POLL_S)

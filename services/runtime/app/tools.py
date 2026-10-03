@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+import subprocess
 
 import httpx
 
@@ -160,10 +161,34 @@ async def t_secret_write(ctx: ToolContext, args: dict) -> str:
 
 
 async def t_exec(ctx: ToolContext, args: dict) -> str:
-    """Run a shell command in the agent workspace (sandboxed cwd, timeout)."""
-    cmd = args["cmd"]
-    if len(cmd) > 2000:
+    """Run a shell command in the agent workspace.
+    foreground (default): killed after settings.exec_timeout_s (R46: 10 min).
+    background=true: detached, NO timeout (R46) — output lands in
+    .tg-exec/<id>.log inside the workspace, read it with ws.read.
+    Runs as the configured exec user when one exists (R46 separate user)."""
+    cmd = args.get("cmd") or args.get("command") or ""
+    if not cmd:
+        return "ERROR: need 'cmd'"
+    if len(cmd) > 8000:
         return "ERROR: command too long"
+    background = bool(args.get("background") or args.get("bg")
+                      or args.get("wait") is False)
+    if settings.exec_user:
+        cmd = (f"sudo -n -u {settings.exec_user} -- bash -c "
+               + _sq(cmd))
+    if background:
+        import uuid
+        logdir = os.path.join(ctx.workspace, ".tg-exec")
+        os.makedirs(logdir, exist_ok=True)
+        log_id = uuid.uuid4().hex[:12]
+        logpath = os.path.join(logdir, f"{log_id}.log")
+        with open(logpath, "w") as logf:
+            subprocess.Popen(cmd, shell=True, cwd=ctx.workspace,
+                             stdout=logf, stderr=subprocess.STDOUT,
+                             stdin=subprocess.DEVNULL,
+                             start_new_session=True)
+        return (f"background job {log_id} started (no timeout); "
+                f"output -> .tg-exec/{log_id}.log")
     proc = await asyncio.create_subprocess_shell(
         cmd, cwd=ctx.workspace,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
@@ -176,6 +201,11 @@ async def t_exec(ctx: ToolContext, args: dict) -> str:
         return f"ERROR: timed out after {settings.exec_timeout_s}s"
     text = out.decode(errors="replace")[:8000]
     return f"[exit {proc.returncode}]\n{text or '(no output)'}"
+
+
+def _sq(s: str) -> str:
+    """single-quote a string for safe shell interpolation"""
+    return "'" + s.replace("'", "'\\''") + "'"
 
 
 async def t_ws_write(ctx: ToolContext, args: dict) -> str:

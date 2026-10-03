@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     # agent workspaces root (the mounted share lives under here)
     workspace_root: str = os.path.expanduser("~/treegent-workspaces")
     heartbeat_s: int = 3600            # R44: default 60 min, per-agent override
-    exec_timeout_s: int = 120
+    exec_timeout_s: int = 600          # R46: foreground cap 10 min
+    exec_user: str = ""                 # R46: separate linux user; sudo -n -u
     max_turn_steps: int = 24           # tool-call steps per turn before forced stop
     search_backend: str = ""           # "" = web search disabled (R42)
 
