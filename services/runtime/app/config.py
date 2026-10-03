@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     heartbeat_s: int = 3600            # R44: default 60 min, per-agent override
     exec_timeout_s: int = 600          # R46: foreground cap 10 min
     exec_user: str = ""                 # R46: separate linux user; sudo -n -u
+    exec_enabled: bool = True           # R48: False on reserved hosts
     max_turn_steps: int = 24           # tool-call steps per turn before forced stop
     search_backend: str = ""           # "" = web search disabled (R42)
 

@@ -166,6 +166,10 @@ async def t_exec(ctx: ToolContext, args: dict) -> str:
     background=true: detached, NO timeout (R46) — output lands in
     .tg-exec/<id>.log inside the workspace, read it with ws.read.
     Runs as the configured exec user when one exists (R46 separate user)."""
+    if not settings.exec_enabled:
+        return ("ERROR: exec is disabled on this host (reserved "
+                "machine, R48) — command execution requires a dedicated "
+                "agent host")
     cmd = args.get("cmd") or args.get("command") or ""
     if not cmd:
         return "ERROR: need 'cmd'"
