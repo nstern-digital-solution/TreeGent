@@ -238,6 +238,12 @@ async def decide(appr_id: str, body: DecideIn, actor_id: str = ""):
             raise HTTPException(500, "mail behind approval vanished")
         try:
             result = await adapters.dispatch_outbound(msg)
+            await db.wake_events.insert_one({
+                "_id": f"wke_{abs(hash((appr_id, 'approved'))) % 10**16:016d}",
+                "agent_id": a["requester_id"], "reason": "approval",
+                "approval_id": appr_id,
+                "detail": f"approved — mail sent to {msg.get('to')}",
+                "created_at": now(), "consumed": False})
             return {"approval_id": appr_id, "status": "approved",
                     "mail": result}
         except Exception as e:  # noqa: BLE001

@@ -55,3 +55,5 @@ else does. Status legend:
 | R43 | Secrets in history | FIRM | full literal R34: proxy history stores complete transcripts INCLUDING secret values — history is permission-guarded (R40), no masking |
 | R44 | Heartbeat | FIRM | default 60 minutes, per-agent configurable |
 | R45 | Agent identity | FIRM | agents authenticate with per-agent keys (X-Agent-Key) on every service; services derive caller identity from the key server-side — caller-supplied identity is ignored/rejected for agent traffic (no spoofing) |
+| R46 | exec sandbox | FIRM | agent commands run as a SEPARATE linux user (cannot read/overwrite agentd/runtime code); workspace folder limits stay; foreground timeout 10 min; background execution NO timeout; deliberately NO containers — agents run their own dockers for dev work |
+| R47 | agent history viewer | FIRM | web tab with per-agent turn + tool-call history, built NOW (not deferred) |
