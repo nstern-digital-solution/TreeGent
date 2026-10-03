@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 [manifest]
 members = [
     "treegent-chat",
+    "treegent-common",
     "treegent-mail",
     "treegent-proxy",
 ]
@@ -432,6 +433,11 @@ requires-dist = [
 ]
 
 [[package]]
+name = "treegent-common"
+version = "0.1.0"
+source = { editable = "packages/treegent-common" }
+
+[[package]]
 name = "treegent-mail"
 version = "0.1.0"
 source = { virtual = "services/mail" }
@@ -440,6 +446,7 @@ dependencies = [
     { name = "httpx" },
     { name = "motor" },
     { name = "pydantic-settings" },
+    { name = "treegent-common" },
     { name = "uvicorn" },
 ]
 
@@ -449,6 +456,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "motor", specifier = ">=3.5" },
     { name = "pydantic-settings", specifier = ">=2.4" },
+    { name = "treegent-common", editable = "packages/treegent-common" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 

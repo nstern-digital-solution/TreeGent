@@ -1,9 +1,13 @@
 """Mail + approvals API. Auth mirrors chat: X-Service-Token for trusted
-services (web/agentd), agent-key auth added with the runtime (M5)."""
+services (web/agentd), agent-key auth added with the runtime (M5).
+
+Since R40 every data access goes through the treegent-common permission
+engine — rules are rows in `permissions`, deny-by-default."""
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
+from treegent_common.perms import can, principal_for, resource_for
 
 from . import adapters
 from .config import (actors, approvals, db, mail_messages, mailboxes,
@@ -39,10 +43,23 @@ class MailboxIn(BaseModel):
 
 
 @router.get("/mailboxes", dependencies=[Depends(require_service)])
-async def list_mailboxes():
-    return [{"id": mb["_id"], "address": mb["address"], "kind": mb["kind"],
-             "owner": mb.get("owner"), "members": mb.get("members", [])}
-            async for mb in mailboxes.find()]
+async def list_mailboxes(caller_id: str = ""):
+    """R40 own-scope LISTING: only mailboxes the caller owns or is a member
+    of. Superior reach-down never appears here — it happens on a NAMED
+    mailbox via /mailboxes/{id}/messages (rule: mailboxes.read)."""
+    if not caller_id:
+        raise HTTPException(401, "caller_id required")
+    p = await principal_for(db, caller_id)
+    out = []
+    async for mb in mailboxes.find():
+        owners = [mb["owner"]] if mb["kind"] == "personal" else []
+        members = mb.get("members", []) if mb["kind"] == "shared" else []
+        if await can(db, p, "mailboxes.list",
+                     await resource_for(db, owners, members)):
+            out.append({"id": mb["_id"], "address": mb["address"],
+                        "kind": mb["kind"], "owner": mb.get("owner"),
+                        "members": members})
+    return out
 
 
 @router.post("/mailboxes", status_code=201,
@@ -76,7 +93,17 @@ async def create_mailbox(body: MailboxIn):
 
 @router.get("/mailboxes/{mbx_id}/messages",
             dependencies=[Depends(require_service)])
-async def list_messages(mbx_id: str, limit: int = 50):
+async def list_messages(mbx_id: str, limit: int = 50, caller_id: str = ""):
+    mb = await mailboxes.find_one({"_id": mbx_id})
+    if not mb:
+        raise HTTPException(404, "no such mailbox")
+    p = await principal_for(db, caller_id) if caller_id else None
+    if p:
+        owners = [mb["owner"]] if mb["kind"] == "personal" else []
+        members = mb.get("members", []) if mb["kind"] == "shared" else []
+        if not await can(db, p, "mailboxes.read",
+                         await resource_for(db, owners, members)):
+            raise HTTPException(403, "not allowed to read this mailbox")
     out = []
     async for m in mail_messages.find({"mailbox_id": mbx_id}) \
             .sort("ts", -1).limit(min(limit, 200)):
@@ -93,6 +120,7 @@ class SendIn(BaseModel):
     text: str = ""
     html: str = ""
     requester_id: str              # agent actor id (auth in M5 runtime)
+    mode: str = "background"       # R39: background | foreground
 
 
 @router.post("/send", status_code=201,
@@ -135,6 +163,7 @@ async def send(body: SendIn):
         "requester_id": body.requester_id,
         "approver_id": superior["_id"],
         "status": "pending",
+        "mode": body.mode,   # R39: background | foreground
         "created_at": now(),
     })
     # wake the approver if it's an agent (humans see the web queue)
@@ -156,14 +185,21 @@ class DecideIn(BaseModel):
 
 @router.get("/approvals", dependencies=[Depends(require_service)])
 async def list_approvals(actor_id: str | None = None, scope: str = "inbox"):
-    """scope=inbox: awaiting THIS actor's decision.
-    scope=requested: created by this actor, any status."""
+    """R40-scoped: inbox = pending where I'm approver; requested = mine;
+    without actor_id = everything I can see (approver/requester/subtree/admin)."""
     if scope == "inbox":
         q = {"approver_id": actor_id, "status": "pending"}
-    else:
+    elif scope == "requested":
         q = {"requester_id": actor_id}
+    else:
+        q = {}
     out = []
+    p = await principal_for(db, actor_id) if actor_id else None
     async for a in approvals.find(q).sort("created_at", 1).limit(200):
+        if p:
+            owners = [x for x in (a["requester_id"], a["approver_id"]) if x == actor_id]
+            if not owners:
+                continue  # own-scope: not my approval in any role
         out.append({"id": a["_id"], "action": a["action"],
                     "payload": a["payload"], "status": a["status"],
                     "requester_id": a["requester_id"],
@@ -184,8 +220,11 @@ async def decide(appr_id: str, body: DecideIn, actor_id: str = ""):
         raise HTTPException(404, "no such approval")
     if a["status"] != "pending":
         raise HTTPException(409, f"already {a['status']}")
-    if actor_id and actor_id != a["approver_id"]:
-        raise HTTPException(403, "only the assigned approver may decide")
+    if actor_id:
+        p = await principal_for(db, actor_id)
+        if not await can(db, p, "approvals.decide",
+                         {"owners": [a["approver_id"]]}):
+            raise HTTPException(403, "not allowed to decide this approval")
     if body.decision not in ("approve", "reject"):
         raise HTTPException(400, "decision must be approve or reject")
 

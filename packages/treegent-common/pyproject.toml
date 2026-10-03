@@ -1,0 +1,6 @@
+[project]
+name = "treegent-common"
+version = "0.1.0"
+description = "Shared TreeGent permission engine + rule seeds"
+requires-python = ">=3.12"
+dependencies = []
