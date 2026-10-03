@@ -17,6 +17,7 @@ export function FilesPane() {
   const [msg, setMsg] = useState(null);
   const [err, setErr] = useState(null);
   const [target, setTarget] = useState('');
+  const [shareFor, setShareFor] = useState(null); // file being shared
   const actors = useTracker(() => Actors.find().fetch(), []);
 
   const refresh = async (query = q) => {
@@ -113,6 +114,9 @@ export function FilesPane() {
                 <button className="btn small" onClick={() => download(f.id, f.name)}>download</button>{' '}
                 <button className="btn small" onClick={() => presign(f.id)}>direct URL</button>{' '}
                 {f.owner === (target || me._id) && (
+                  <button className="btn small" onClick={() => setShareFor(f)}>share</button>
+                )}{' '}
+                {f.owner === (target || me._id) && (
                   <button className="btn small danger" onClick={() => run(async () => {
                     await call(`/files/${f.id}`, 'DELETE', null, target || undefined);
                     refresh();
@@ -127,6 +131,32 @@ export function FilesPane() {
           )}
         </tbody>
       </table>
+      {shareFor && (
+        <div className="compose-overlay" onClick={() => setShareFor(null)}>
+          <div className="login-card compose-card" onClick={(e) => e.stopPropagation()}>
+            <h3>Share “{shareFor.name}”</h3>
+            {actors.filter((a) => a._id !== (target || me._id)).map((a) => (
+              <label key={a._id} className="muted small">
+                <input type="checkbox" checked={(shareFor.shared_with || []).includes(a._id)}
+                  onChange={(e) => {
+                    const cur = new Set(shareFor.shared_with || []);
+                    if (e.target.checked) cur.add(a._id); else cur.delete(a._id);
+                    setShareFor({ ...shareFor, shared_with: [...cur] });
+                  }} />
+                {' '}{a.display_name} ({a.kind})
+              </label>
+            ))}
+            <button className="btn" onClick={() => run(async () => {
+              await call(`/files/${shareFor.id}/share`, 'PUT',
+                { with: shareFor.shared_with }, target || undefined);
+              setShareFor(null);
+              refresh();
+              return 'sharing updated';
+            })}>save</button>
+            <button className="btn small" onClick={() => setShareFor(null)}>cancel</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
