@@ -80,3 +80,9 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f6f8fa; color
 /* --- M4 secrets ---------------------------------------------------------- */
 .secret-toolbar { display: flex; gap: .5rem; margin: .5rem 0 1rem; align-items: center; }
 .secret-toolbar input { flex: 1; max-width: 420px; padding: .4rem .6rem; border: 1px solid #c9d1d9; border-radius: 6px; }
+/* --- agents viewer ------------------------------------------------------- */
+.clickable-row { cursor: pointer; }
+.clickable-row:hover { background: rgba(0,0,0,.04); }
+.detail-row td { background: rgba(0,0,0,.03); }
+.mono-block { font-family: ui-monospace, monospace; font-size: .8rem; padding: .5rem; }
+.mono-line { white-space: pre-wrap; word-break: break-word; padding: .15rem 0; }

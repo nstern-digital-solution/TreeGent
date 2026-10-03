@@ -33,3 +33,27 @@ async def agents_overview(x_service_token: str = Header(default="")):
     return {"agents": [{"id": aid, "busy": st.get("busy", False),
                         "name": st.get("name")}
                        for aid, st in AGENTS_STATE.items()]}
+
+
+@app.get("/internal/history/{agent_id}")
+async def agent_history(agent_id: str, x_service_token: str = Header(default=""),
+                        limit: int = 50):
+    """R47: turns + tool calls for the web viewer. Full transcripts only
+    with limit=0 (viewer fetches on demand)."""
+    if x_service_token != settings.service_token:
+        raise HTTPException(401, "bad service token")
+    if limit == 0:
+        doc = await db.agent_sessions.find_one({"_id": agent_id})
+        return {"messages": (doc or {}).get("messages", [])}
+    turns = []
+    async for t in db.runtime_turns.find({"agent_id": agent_id})             .sort("started", -1).limit(limit):
+        turns.append({
+            "id": t["_id"],
+            "trigger": t.get("trigger"),
+            "steps": t.get("steps", 0),
+            "final": (t.get("final") or "")[:2000],
+            "injections": [i[:500] for i in (t.get("injections") or [])],
+            "started": t.get("started"),
+            "ended": t.get("ended"),
+        })
+    return {"turns": turns}

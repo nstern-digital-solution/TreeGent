@@ -12,6 +12,7 @@ import { ModelsDashboard } from './ModelsDashboard.jsx';
 import { ApprovalsPane, MailPane } from './MailPane.jsx';
 import { SecretsPane } from './SecretsPane.jsx';
 import { FilesPane } from './FilesPane.jsx';
+import { AgentsPane } from './AgentsPane.jsx';
 
 export function App() {
   const user = useTracker(() => Meteor.user(), []);
@@ -44,6 +45,7 @@ export function App() {
           <button className={`tab ${tab === 'mail' ? 'on' : ''}`} onClick={() => setTab('mail')}>Mail</button>
           <button className={`tab ${tab === 'secrets' ? 'on' : ''}`} onClick={() => setTab('secrets')}>Secrets</button>
           <button className={`tab ${tab === 'files' ? 'on' : ''}`} onClick={() => setTab('files')}>Files</button>
+          <button className={`tab ${tab === 'agents' ? 'on' : ''}`} onClick={() => setTab('agents')}>Agents</button>
         </nav>
         <span className="me">
           {actor ? `${actor.display_name} · ${actor.kind}` : user.username}
@@ -60,6 +62,7 @@ export function App() {
       {tab === 'mail' && <MailPane />}
       {tab === 'secrets' && <SecretsPane />}
       {tab === 'files' && <FilesPane />}
+      {tab === 'agents' && <AgentsPane />}
     </div>
   );
 }

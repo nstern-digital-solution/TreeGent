@@ -273,6 +273,24 @@ Meteor.methods({
     return data;
   },
 
+  async 'runtime.api'(path, method, body) {
+    check(path, String); check(method, String);
+    const caller = await Meteor.userAsync();
+    if (!caller || !caller.isAdmin) {
+      throw new Meteor.Error('forbidden', 'admin only');
+    }
+    const RUNTIME_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.private.runtimeUrl) || 'http://127.0.0.1:8010';
+    const res = await fetch(`${RUNTIME_URL}${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Meteor.Error('runtime-api', `${res.status}: ${JSON.stringify(data)}`);
+    }
+    return data;
+  },
+
   async 'files.api'(path, method, body, asActorId) {
     check(path, String); check(method, String);
     const caller = await Meteor.userAsync();
