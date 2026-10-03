@@ -272,4 +272,54 @@ Meteor.methods({
     }
     return data;
   },
+
+  async 'files.api'(path, method, body, asActorId) {
+    check(path, String); check(method, String);
+    const caller = await Meteor.userAsync();
+    if (!caller) throw new Meteor.Error('forbidden', 'login required');
+    const FILES_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.private.filesUrl) || 'http://127.0.0.1:8004';
+    let url = `${FILES_URL}${path}`;
+    const myId = (await myActor(caller) || {})._id || '';
+    let actor = myId;
+    if (asActorId && asActorId !== myId) {
+      const target = await Actors.findOneAsync({ _id: asActorId });
+      const anc = (target && target.org && target.org.ancestors) || [];
+      if (!anc.includes(myId)) {
+        throw new Meteor.Error('forbidden', 'reach-down requires superior position');
+      }
+      actor = asActorId;
+    }
+    if (method === 'UPLOAD') {
+      // File objects can't cross the Meteor method boundary — arrive as
+      // {name, type, b64}; rebuild a Blob and multipart it server-side.
+      const { name, type, b64 } = body;
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const fd = new FormData();
+      fd.append('file', new Blob([bytes], { type: type || 'application/octet-stream' }), name);
+      const res = await fetch(`${FILES_URL}/files${url.includes('?') ? '&' : '?'}caller_id=${encodeURIComponent(actor)}`, {
+        method: 'POST',
+        headers: { 'X-Service-Token': SERVICE_TOKEN },
+        body: fd,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Meteor.Error('files-api', `${res.status}: ${JSON.stringify(data)}`);
+      return data;
+    }
+    url += (path.includes('?') ? '&' : '?') + `caller_id=${encodeURIComponent(actor)}`;
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN },
+      body: body && method !== 'GET' ? JSON.stringify(body) : undefined,
+    });
+    if (path.includes('/download')) {
+      if (!res.ok) throw new Meteor.Error('files-api', `${res.status}`);
+      return await res.text();
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Meteor.Error('files-api', `${res.status}: ${
+        typeof data.detail === 'string' ? data.detail : JSON.stringify(data)}`);
+    }
+    return data;
+  },
 });
