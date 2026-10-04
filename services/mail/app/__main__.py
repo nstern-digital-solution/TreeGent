@@ -37,16 +37,21 @@ async def _startup() -> None:
         addr = f"{local}@{settings.mail_domain}"
         canonical_id = f"mbx_{addr.replace('@', '_at_')}"
         # migrate: any OTHER personal box owned by this agent becomes the
-        # canonical one (covers firstname@ and old-domain renames); if the
-        # canonical already exists, drop the stale extra instead.
-        async for old_box in db.mailboxes.find(
-                {"owner": a["_id"], "kind": "personal", "_id": {"$ne": canonical_id}}):
-            if await db.mailboxes.find_one({"_id": canonical_id}):
+        # canonical one (covers firstname@ and old-domain renames). _id is
+        # immutable in Mongo — rewrite = delete + insert, preserving mail.
+        if not await db.mailboxes.find_one({"_id": canonical_id}):
+            async for old_box in db.mailboxes.find(
+                    {"owner": a["_id"], "kind": "personal",
+                     "_id": {"$ne": canonical_id}}):
+                moved = await db.mail_messages.update_many(
+                    {"mailbox_id": old_box["_id"]},
+                    {"$set": {"mailbox_id": canonical_id}})
+                await db.mailboxes.insert_one({
+                    **{k: v for k, v in old_box.items() if k != "_id"},
+                    "_id": canonical_id, "address": addr})
                 await db.mailboxes.delete_one({"_id": old_box["_id"]})
-            else:
-                await db.mailboxes.update_one(
-                    {"_id": old_box["_id"]},
-                    {"$set": {"_id": canonical_id, "address": addr}})
+                print(f"[mail] migrated {old_box['address']} -> {addr} "
+                      f"({moved.modified_count} messages)")
         if not await db.mailboxes.find_one({"_id": canonical_id}):
             await db.mailboxes.insert_one({
                 "_id": canonical_id, "address": addr, "kind": "personal",

@@ -30,7 +30,8 @@ class Settings(BaseSettings):
     service_token: str = Field(default="dev-service-token",
                             validation_alias=AliasChoices("TG_MAIL_SERVICE_TOKEN", "TG_SERVICE_TOKEN"))
     chat_url: str = "http://127.0.0.1:8000"
-    mail_domain: str = "treegent.local"  # dev default; real = deployment data
+    mail_domain: str = Field(default="treegent.local",
+                          validation_alias=AliasChoices("TG_MAIL_DOMAIN"))  # deployment data
 
     model_config = {"env_prefix": "TG_MAIL_", "env_file": ".env", "extra": "ignore"}
 
