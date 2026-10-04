@@ -32,9 +32,11 @@ class Agent:
         os.makedirs(self.workspace, exist_ok=True)
         self.svcs = T.Services(self.key, self.id)
         # the agent's life: one continuous transcript
+        from treegent_common.identity import persona_line
+        persona = persona_line(actor) + " "
         self.messages: list[dict] = [
             {"role": "system",
-             "content": (f"You are {self.name}, an agent at TreeGent. You "
+             "content": (persona + f"You are {self.name}, an agent at TreeGent. You "
                          "have colleagues (humans and agents) in a company "
                          "hierarchy. Messages from the world arrive as "
                          "system lines like 'You have a new message from X "

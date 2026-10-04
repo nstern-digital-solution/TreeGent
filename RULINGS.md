@@ -58,3 +58,15 @@ else does. Status legend:
 | R46 | exec sandbox | FIRM | agent commands run as a SEPARATE linux user (cannot read/overwrite agentd/runtime code); workspace folder limits stay; foreground timeout 10 min; background execution NO timeout; deliberately NO containers — agents run their own dockers for dev work |
 | R47 | agent history viewer | FIRM | web tab with per-agent turn + tool-call history, built NOW (not deferred) |
 | R48 | Agent host boundary | FIRM | deployment hosts running agent code are reserved machines — never a shared services host; dev/testing of exec is the only exception and exec is DISABLED there (TG_RUNTIME_EXEC_ENABLED=false). Real agents run on their own hosts via agentd (R19) with exec enabled, own workspaces, own users |
+
+## R49 — agent identity (2026-10-04)
+Every agent gets a random human name + personality traits at creation
+(operator: "every agent should get a random 'human' name and personality
+traits assigned at creation. These can then also reside in his system
+prompt and be used for his email address").
+- identity assigned ONCE in chat actors.create (agents only), stored on
+  the actor doc (persona.persona_name / traits / style)
+- display_name = persona name (admins still see username)
+- runtime system prompt leads with the persona line
+- personal mailbox = firstname@domain (idempotent ensure at mail boot)
+- humans unaffected

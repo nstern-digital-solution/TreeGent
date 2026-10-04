@@ -51,6 +51,12 @@ async def create_actor(body: ActorIn, actor: dict = Depends(require_service)):
         "extra": body.extra,
         "created_at": idgen.now(),
     }
+    if body.kind == "agent":
+        # R49: random human name + personality, assigned at creation; used
+        # by the runtime system prompt and the agent's mail address.
+        from treegent_common.identity import assign_identity
+        doc["persona"] = assign_identity()
+        doc["display_name"] = doc["persona"]["persona_name"]
     await db.actors.insert_one(doc)
     return pub(doc)
 

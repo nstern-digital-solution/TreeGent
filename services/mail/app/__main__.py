@@ -19,13 +19,22 @@ async def _startup() -> None:
         await db.mail_adapters.insert_one(
             {"_id": "outbound-default", "direction": "outbound",
              "kind": "sink", "enabled": True})
-    # ensure mailboxes exist for every agent actor (personal, dev domain)
+    # R49: mailboxes derived from the agent's persona first name
+    # (ada@domain); falls back to username when no persona exists
+    import re
+    import datetime
     async for a in db.actors.find({"kind": "agent"}):
-        addr = f"{a['username']}@{settings.mail_domain}"
+        p = a.get("persona") or {}
+        first = (p.get("persona_name") or a.get("display_name")
+                 or a.get("username") or "agent")
+        first = first.split()[0].lower()
+        first = re.sub(r"[^a-z0-9]", "", first) or "agent"
+        addr = f"{first}@{settings.mail_domain}"
         if not await db.mailboxes.find_one({"address": addr}):
             await db.mailboxes.insert_one({
                 "_id": f"mbx_{addr.replace('@', '_at_')}",
-                "address": addr, "kind": "personal", "owner": a["_id"]})
+                "address": addr, "kind": "personal", "owner": a["_id"],
+                "created_at": datetime.datetime.utcnow()})
 
 
 @app.get("/health")
