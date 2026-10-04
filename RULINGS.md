@@ -93,3 +93,17 @@ meteor which is a big security issue we cant have people create accounts!"
 - verified: client-side createUser over raw DDP → 403 "Signups forbidden",
   no user written; server-side paths (bootstrap, admin-gated tg.createActor)
   unaffected
+
+## R53 — agent hosts via web UI (2026-10-04)
+Operator design: enter server IP/domain (+port +ssh user) in the web UI; UI
+shows a one-liner to authorize the central box's PUBLIC key on the agent
+box; central then provisions the machine remotely over SSH.
+- Hosts tab (admin): add/list/provision; central ed25519 keypair generated
+  on first use, private key NEVER leaves the central box / enters Mongo
+- provision = tgexec user (R46), repo, venv, systemd treegent-agent.service,
+  runtime-only env (no service token — agent keys only, R45)
+- actor.host_id: host-scoped runtimes claim ONLY their agents; central
+  runtime runs unassigned ones — no double-running
+- Caddy: /chat /proxy /mail /secrets /files TLS routes for agent hosts
+- verified: central runtime skipped a host-assigned agent; host-scoped
+  runtime claimed exactly that one (Jonas Jovic) and nothing else

@@ -14,6 +14,7 @@ class ActorIn(BaseModel):
     display_name: str = Field(min_length=1, max_length=64)
     kind: str = "human"
     parent_id: str | None = None
+    host_id: str | None = None   # R53: agent host assignment
     extra: dict = Field(default_factory=dict)
 
 
@@ -57,6 +58,8 @@ async def create_actor(body: ActorIn, actor: dict = Depends(require_service)):
         from treegent_common.identity import assign_identity
         doc["persona"] = assign_identity()
         doc["display_name"] = doc["persona"]["persona_name"]
+        if body.host_id:
+            doc["host_id"] = body.host_id   # R53: claimed by that host's runtime
     await db.actors.insert_one(doc)
     return pub(doc)
 

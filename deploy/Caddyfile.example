@@ -1,14 +1,36 @@
-# Optional TLS reverse proxy for the web UI (Caddy).
-# Install caddy, copy to /etc/caddy/Caddyfile, adjust the domain.
+# TreeGent central box — Caddy config.
 #
-# NOTE: Meteor/SockJS needs unbuffered websocket forwarding — Caddy's
-# default response buffering breaks the sockjs upgrade.
+# (1) web UI + sockjs (unbuffered websocket forwarding — Caddy's default
+#     buffering breaks the sockjs upgrade)
+# (2) service routes for agent hosts (R53): the runtime on an agent host
+#     reaches chat/proxy/mail/secrets/files over TLS. Every endpoint
+#     authenticates per-request (agent keys, R45) — no open doors.
 treegent.example.com {
     @sockjs path /sockjs/*
     handle @sockjs {
         reverse_proxy 127.0.0.1:3000 {
             flush_interval -1
         }
+    }
+    handle /chat/* {
+        uri strip_prefix /chat
+        reverse_proxy 127.0.0.1:8000
+    }
+    handle /proxy/* {
+        uri strip_prefix /proxy
+        reverse_proxy 127.0.0.1:8001
+    }
+    handle /mail/* {
+        uri strip_prefix /mail
+        reverse_proxy 127.0.0.1:8002
+    }
+    handle /secrets/* {
+        uri strip_prefix /secrets
+        reverse_proxy 127.0.0.1:8003
+    }
+    handle /files/* {
+        uri strip_prefix /files
+        reverse_proxy 127.0.0.1:8004
     }
     handle {
         reverse_proxy 127.0.0.1:3000

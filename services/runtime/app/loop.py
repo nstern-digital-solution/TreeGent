@@ -343,8 +343,16 @@ async def supervise(state_registry: dict | None = None) -> None:
     agents: dict[str, Agent] = {}
 
     async def ensure_agents():
+        # R53: agent hosts claim ONLY their agents (actor.host_id);
+        # central runtime (no host_id set) runs the unassigned ones.
+        own = settings.host_id if settings.host_id else None
         async for a in db.actors.find({"kind": "agent"}):
             if a["_id"] in agents:
+                continue
+            a_host = a.get("host_id")
+            if own and a_host != own:
+                continue
+            if not own and a_host:
                 continue
             key_doc = await db.agent_keys.find_one(
                 {"agent_id": a["_id"], "revoked": {"$ne": True}})

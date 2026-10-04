@@ -12,6 +12,7 @@ const CHAT_URL = process.env.TG_CHAT_URL || (Meteor.settings && Meteor.settings.
 const SERVICE_TOKEN = process.env.TG_SERVICE_TOKEN || (Meteor.settings && Meteor.settings.private && Meteor.settings.private.serviceToken) || 'dev-service-token';
 const PROXY_URL = process.env.TG_PROXY_URL || (Meteor.settings && Meteor.settings.private && Meteor.settings.proxyUrl) || 'http://127.0.0.1:8001';
 const MAIL_URL = process.env.TG_MAIL_URL || (Meteor.settings && Meteor.settings.private && Meteor.settings.mailUrl) || 'http://127.0.0.1:8002';
+const RUNTIME_URL = process.env.TG_RUNTIME_URL || (Meteor.settings && Meteor.settings.private && Meteor.settings.private.runtimeUrl) || 'http://127.0.0.1:8010';
 
 // --- helpers (Meteor 3: async collection access on the server) -----------
 
@@ -200,9 +201,10 @@ Meteor.methods({
     return true;
   },
 
-  async 'tg.createActor'(username, password, display, kind, parentId) {
+  async 'tg.createActor'(username, password, display, kind, parentId, hostId) {
     check(username, String); check(password, String); check(display, String);
     check(kind, String);
+    if (hostId !== undefined && hostId !== null) check(hostId, String);
     const caller = await Meteor.userAsync();
     if (!caller || !caller.isAdmin) throw new Meteor.Error('forbidden', 'admin only');
     // idempotent: reuse an existing Meteor user if the actor is missing
@@ -219,10 +221,40 @@ Meteor.methods({
     if (!me) {
       throw new Meteor.Error('no-actor', 'caller has no actor record');
     }
-    await api('/actors', 'POST', me._id, {
+    const body = {
       username, display_name: display, kind, parent_id: parentId || null,
-    });
+    };
+    if (hostId) body.host_id = hostId;   // R53: run on a specific agent host
+    await api('/actors', 'POST', me._id, body);
     return true;
+  },
+
+  // ---- agent hosts (R53) ----
+  async 'tg.hosts.list'() {
+    const r = await fetch(`${RUNTIME_URL}/internal/hosts`, {
+      headers: { 'X-Service-Token': SERVICE_TOKEN } });
+    return r.json();
+  },
+  async 'tg.hosts.pubkey'() {
+    const r = await fetch(`${RUNTIME_URL}/internal/hosts/pubkey`, {
+      headers: { 'X-Service-Token': SERVICE_TOKEN } });
+    return r.json();
+  },
+  async 'tg.hosts.add'(name, address, port, sshUser) {
+    check(name, String); check(address, String); check(port, Number); check(sshUser, String);
+    const r = await fetch(`${RUNTIME_URL}/internal/hosts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN },
+      body: JSON.stringify({ name, address, port, ssh_user: sshUser }) });
+    if (!r.ok) throw new Meteor.Error('hosts', `${r.status}`);
+    return r.json();
+  },
+  async 'tg.hosts.provision'(hostId) {
+    check(hostId, String);
+    const r = await fetch(`${RUNTIME_URL}/internal/hosts/${hostId}/provision`, {
+      method: 'POST',
+      headers: { 'X-Service-Token': SERVICE_TOKEN } });
+    return r.json();
   },
 
   async 'tg.issueAgentKey'(agentId) {

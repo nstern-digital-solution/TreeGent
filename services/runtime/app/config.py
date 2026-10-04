@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     exec_timeout_s: int = 600          # R46: foreground cap 10 min
     exec_user: str = ""                 # R46: separate linux user; sudo -n -u
     exec_enabled: bool = True            # R48: False on reserved hosts
+    host_id: str = Field(default="",
+                      validation_alias=AliasChoices("TG_RUNTIME_HOST_ID", "TG_HOST_ID"))
     # (TG_RUNTIME_EXEC_ENABLED shared name handled by prefix already)
     max_turn_steps: int = 24           # tool-call steps per turn before forced stop
     search_backend: str = ""           # "" = web search disabled (R42)

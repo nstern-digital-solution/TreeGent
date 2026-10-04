@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Actors } from '../collections.js';
@@ -10,7 +10,12 @@ export function Admin() {
   const [kind, setKind] = useState('human');
   const [parent, setParent] = useState('');
   const [msg, setMsg] = useState('');
-  const [issued, setIssued] = useState(null); // {agentId, key} shown ONCE
+  const [issued, setIssued] = useState(null);
+  const [hosts, setHosts] = useState([]);
+  useEffect(() => {
+    Meteor.callAsync('tg.hosts.list').then((r) => setHosts(r.hosts || []));
+  }, []);
+ // {agentId, key} shown ONCE
 
   const issueKey = (agentId) => {
     setMsg(''); setIssued(null);
@@ -33,10 +38,10 @@ export function Admin() {
     e.preventDefault();
     setMsg('');
     Meteor.call('tg.createActor', username.trim(), password, display.trim(), kind,
-      parent || null, (err) => {
+      parent || null, hostId || null, (err) => {
         if (err) return setMsg(err.message);
         setMsg(`created ${username.trim()}`);
-        setUsername(''); setPassword(''); setDisplay(''); setKind('human'); setParent('');
+        setUsername(''); setPassword(''); setDisplay(''); setKind('human'); setParent(''); setHostId('');
       });
   };
 
@@ -52,6 +57,10 @@ export function Admin() {
         <select value={kind} onChange={(e) => setKind(e.target.value)}>
           <option value="human">human</option>
           <option value="agent">agent</option>
+        </select>
+        <select value={hostId} onChange={(e) => setHostId(e.target.value)}>
+          <option value="">(central)</option>
+          {hosts.map((h) => <option key={h.id} value={h.id}>{h.name} ({h.status})</option>)}
         </select>
         <select value={parent} onChange={(e) => setParent(e.target.value)}>
           <option value="">— no parent —</option>
