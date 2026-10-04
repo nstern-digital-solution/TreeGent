@@ -140,7 +140,13 @@ say "cloning TreeGent"
 REPO_DIR="/opt/TreeGent"
 if [ -d "$REPO_DIR" ]; then
   say "repo exists — pulling latest"
-  git -C "$REPO_DIR" pull --ff-only || true
+  # repo dir is owned by the service user (meteor writes build dirs there);
+  # git as root needs an explicit trust or it refuses AND we must NOT hide it
+  git config --global --add safe.directory "$REPO_DIR" 2>/dev/null || true
+  if ! git -C "$REPO_DIR" pull --ff-only; then
+    say "ERROR: git pull failed — fix git access and re-run (NOT deploying stale code)"
+    exit 1
+  fi
 else
   git clone -q https://github.com/nstern-digital-solution/TreeGent.git "$REPO_DIR"
 fi
