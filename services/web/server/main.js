@@ -33,6 +33,10 @@ async function ensureAtLeastOneAdmin() {
 }
 Meteor.startup(() => { ensureAtLeastOneAdmin(); });
 
+// Security: ALL account creation flows through server methods (bootstrap +
+// admin-only tg.createActor). Kill the default client-callable createUser.
+Accounts.config({ forbidClientAccountCreation: true });
+
 async function myActor(user) {
   if (!user) return null;
   return await Actors.findOneAsync({ username: user.username });
