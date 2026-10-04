@@ -271,26 +271,13 @@ async def t_web_search(ctx: ToolContext, args: dict) -> str:
 
 
 async def t_memory_search(ctx: ToolContext, args: dict) -> str:
-    from .config import db, memories
-    rx = {"$regex": args["q"], "$options": "i"}
-    hits = [m async for m in memories.find(
-        {"agent_id": ctx.agent_id,
-         "$or": [{"text": rx}]}).sort("ts", -1).limit(10)]
-    if not hits:
-        return "no memories match"
-    return "\n".join(f"[{h['ts'].strftime('%m-%d %H:%M')}] {h['text'][:200]}"
-                     for h in hits)
+    from . import soul as SOUL
+    return SOUL.memory_search(ctx.workspace, args["q"])
 
 
 async def t_memory_write(ctx: ToolContext, args: dict) -> str:
-    from datetime import datetime, timezone
-    from .config import memories
-    await memories.insert_one({
-        "_id": f"mem_{os.urandom(6).hex()}",
-        "agent_id": ctx.agent_id,
-        "text": args["text"][:4000],
-        "ts": datetime.now(timezone.utc)})
-    return "remembered"
+    from . import soul as SOUL
+    return SOUL.memory_append(ctx.workspace, args["text"])
 
 
 TOOLS: dict = {
@@ -373,11 +360,11 @@ TOOL_SCHEMAS = [
         "parameters": {"type": "object", "properties": {
             "q": {"type": "string"}, "required": ["q"]}}},
     {
-        "name": "memory.search", "description": "search your own memory notes",
+        "name": "memory.search", "description": "search MEMORY.md and notes/*.md for a word or regex — your long-term memory in files",
         "parameters": {"type": "object", "properties": {
             "q": {"type": "string"}, "required": ["q"]}}},
     {
-        "name": "memory.write", "description": "save a note to your own memory",
+        "name": "memory.write", "description": "append a durable note to MEMORY.md (timestamped, tail rides in your context every turn). For facts worth keeping: preferences, decisions, how-tos — not transient state.",
         "parameters": {"type": "object", "properties": {
             "text": {"type": "string"}, "required": ["text"]}}},
 ]

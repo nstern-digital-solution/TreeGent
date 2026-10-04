@@ -70,3 +70,18 @@ prompt and be used for his email address").
 - runtime system prompt leads with the persona line
 - personal mailbox = firstname@domain (idempotent ensure at mail boot)
 - humans unaffected
+
+## R50 — soul & memory as markdown (2026-10-04)
+Operator: "How do we handle memories and soul like as a markdown files?"
++ "Yes build it now and take inspiration from the hermes agent, openclaw,
+  nanoclaw and nanobot system prompts".
+- SOUL.md (voice, injected every turn, generated from R49 persona once,
+  then agent/operator-owned; edits apply next turn — live re-read)
+- MEMORY.md (durable notes, tail-injected ≤8k chars; memory.write appends
+  timestamped lines; unbounded on disk)
+- notes/*.md (working memory, never injected, searched on demand)
+- budgets: SOUL 4k / MEMORY tail 8k / note 4k chars — injected copy only,
+  disk never truncated; oversize shows a trim marker
+- system message regenerated from current code + soul files on every
+  session load (stale prompts from disk never trusted)
+- memory tools now file-backed (Mongo agent_memory legacy, unused)
