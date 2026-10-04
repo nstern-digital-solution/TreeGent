@@ -85,3 +85,11 @@ Operator: "How do we handle memories and soul like as a markdown files?"
 - system message regenerated from current code + soul files on every
   session load (stale prompts from disk never trusted)
 - memory tools now file-backed (Mongo agent_memory legacy, unused)
+
+## R51 — client account creation forbidden (2026-10-04)
+Operator caught live: "you have client side account creation enabled in
+meteor which is a big security issue we cant have people create accounts!"
+- Accounts.config({ forbidClientAccountCreation: true })
+- verified: client-side createUser over raw DDP → 403 "Signups forbidden",
+  no user written; server-side paths (bootstrap, admin-gated tg.createActor)
+  unaffected
