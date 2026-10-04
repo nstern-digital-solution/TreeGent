@@ -39,8 +39,12 @@ case "$BASE" in
   *) BASE="$BASE/treegent" ;;
 esac
 if [ -n "$QUERY" ]; then MU="$BASE?$QUERY"; else MU="$BASE"; fi
-if command -v meteor >/dev/null; then
-  MONGO_URL="$MU" meteor --production --port "$METEOR_PORT" &
+METEOR_BIN="$(command -v meteor || true)"
+if [ -z "$METEOR_BIN" ] && [ -x "/home/treegent/.meteor/meteor" ]; then
+  METEOR_BIN="/home/treegent/.meteor/meteor"
+fi
+if [ -n "$METEOR_BIN" ]; then
+  MONGO_URL="$MU" "$METEOR_BIN" --production --port "$METEOR_PORT" &
   pids+=($!); cmds+=("web")
 else
   echo "meteor not found — web UI not started" >&2
@@ -56,6 +60,9 @@ while :; do
       FAILURES=$((FAILURES+1))
     fi
   done
-  [ ${#pids[@]} -eq 0 ] && { echo "[supervisor] all services exited" >&2; exit 1; }
+  if [ ${#pids[@]} -eq 0 ]; then
+    echo "[supervisor] all services exited" >&2
+    exit 1
+  fi
   sleep 5
 done

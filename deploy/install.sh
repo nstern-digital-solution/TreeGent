@@ -24,13 +24,19 @@ cd "$REPO_DIR"
 uv sync
 uv run python3 -c "import services.chat.app.main, services.proxy.app.main, services.mail.app.main, services.secrets.app.main, services.files.app.main, services.runtime.app.__main__; print('services import OK')"
 
-# 3) web deps — meteor via official installer (npm path needs node, absent on fresh boxes)
+# 3) web deps — meteor via official installer, AS the service user (the
+#    systemd unit runs User=treegent; /root/.meteor would be unreachable,
+#    and install.meteor.com only adjusts PATH for login shells — hence the
+#    absolute-path fallback used by run-central.sh).
 cd "$REPO_DIR/services/web"
-if ! command -v meteor >/dev/null; then
-  curl -LsSf https://install.meteor.com/ | sh || echo "WARN: meteor install failed — web UI will not start"
+METEOR_BIN="/home/$SYSUSER/.meteor/meteor"
+if [ ! -x "$METEOR_BIN" ]; then
+  sudo -u "$SYSUSER" curl -LsSf https://install.meteor.com/ | sudo -u "$SYSUSER" sh     || echo "WARN: meteor install failed — web UI will not start"
 fi
-if command -v meteor >/dev/null; then
-  meteor npm install --also-dev 2>/dev/null || meteor npm install || true
+# the service user must own the repo: meteor writes build dirs (.meteor/local)
+chown -R "$SYSUSER:$SYSUSER" "$REPO_DIR"
+if [ -x "$METEOR_BIN" ]; then
+  sudo -u "$SYSUSER" "$METEOR_BIN" npm install --also-dev 2>/dev/null || sudo -u "$SYSUSER" "$METEOR_BIN" npm install || true
 fi
 
 # 4) env dir (root-owned) + secrets master key if missing
