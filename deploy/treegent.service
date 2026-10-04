@@ -1,0 +1,17 @@
+[Unit]
+Description=TreeGent central host (chat, proxy, mail, secrets, files, runtime, web)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SYSUSER@
+Group=@SYSUSER@
+WorkingDirectory=@REPO@
+EnvironmentFile=/etc/treegent/env
+ExecStart=@REPO@/deploy/run-central.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

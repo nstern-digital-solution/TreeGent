@@ -1,0 +1,5 @@
+# Optional TLS reverse proxy for the web UI (Caddy).
+# Install caddy, copy to /etc/caddy/Caddyfile, adjust the domain.
+treegent.example.com {
+    reverse_proxy 127.0.0.1:3000
+}

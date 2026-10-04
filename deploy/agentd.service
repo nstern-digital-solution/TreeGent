@@ -1,0 +1,17 @@
+[Unit]
+Description=TreeGent agent host daemon (agentd — exec enabled, R48)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SYSUSER@
+Group=@SYSUSER@
+WorkingDirectory=@REPO@
+EnvironmentFile=/etc/treegent/env
+ExecStart=@REPO@/.venv/bin/uvicorn services.runtime.app.__main__:app --host 127.0.0.1 --port 8010
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
