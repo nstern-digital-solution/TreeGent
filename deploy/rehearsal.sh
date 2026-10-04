@@ -151,13 +151,21 @@ if [ -x "$CADDY_BIN" ]; then
     "$CADDY_BIN" run --config "$LAB/Caddyfile" --adapter caddyfile >"$LAB/caddy.log" 2>&1 &
   CADDY_PID=$!
   sleep 4
-  CODE="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 6 \
-    -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
-    -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
-    -H 'Origin: https://127.0.0.1:8443' \
-    'https://127.0.0.1:8443/sockjs/000/rehearsal-ws-test/websocket')"
-  [ "$CODE" = "101" ] && ok "sockjs websocket upgrade through caddy (101)" \
-                      || bad "ws upgrade via caddy: HTTP $CODE (expected 101)"
+  # real ws client (curl's minimal handshake 400s through proxies — browsers don't)
+  WSOK="$(uv run --with websocket-client python3 -c "
+import websocket, ssl, sys, random
+sid = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=8))
+try:
+    ws = websocket.create_connection(f'wss://127.0.0.1:8443/sockjs/000/{sid}/websocket',
+        timeout=10, sslopt={'cert_reqs': ssl.CERT_NONE}, suppress_origin=True)
+    print('OK' if ws.recv().startswith('o') else 'BAD-FRAME'); ws.close()
+except Exception as e:
+    print('FAIL', type(e).__name__)
+" 2>/dev/null)"
+  case "$WSOK" in
+    OK) ok "sockjs websocket through caddy (real client)" ;;
+    *) bad "ws via caddy failed: $WSOK" ;;
+  esac
   kill "$CADDY_PID" 2>/dev/null
   [ -n "${WEB_PID:-}" ] && kill "$WEB_PID" 2>/dev/null
 else
