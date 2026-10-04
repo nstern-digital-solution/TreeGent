@@ -10,7 +10,10 @@ def s3_kwargs() -> dict:
         "aws_secret_access_key": settings.s3_secret_key or env_fallback("TG_S3_SECRET_KEY"),
     }
     if settings.s3_endpoint:
-        kw["endpoint_url"] = settings.s3_endpoint
+        ep = settings.s3_endpoint
+        if not ep.startswith(("http://", "https://")):
+            ep = f"https://{ep}"
+        kw["endpoint_url"] = ep
     if settings.s3_region:
         kw["region_name"] = settings.s3_region
     return kw

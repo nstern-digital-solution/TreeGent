@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     service_token: str = "dev-service-token"
 
     # S3 host is USER-PROVIDED (R41): endpoint/bucket/keys from env, like Mongo.
+    # endpoint scheme normalized: bare host gets https:// (Hetzner/AWS style)
     s3_endpoint: str = Field(default="", validation_alias=AliasChoices("TG_FILES_S3_ENDPOINT", "TG_S3_ENDPOINT"))
     s3_bucket: str = Field(default="treegent", validation_alias=AliasChoices("TG_FILES_S3_BUCKET", "TG_S3_BUCKET"))
     s3_region: str = Field(default="", validation_alias=AliasChoices("TG_FILES_S3_REGION", "TG_S3_REGION"))

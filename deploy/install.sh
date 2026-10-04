@@ -24,10 +24,14 @@ cd "$REPO_DIR"
 uv sync
 uv run python3 -c "import services.chat.app.main, services.proxy.app.main, services.mail.app.main, services.secrets.app.main, services.files.app.main, services.runtime.app.__main__; print('services import OK')"
 
-# 3) web deps
+# 3) web deps — meteor via official installer (npm path needs node, absent on fresh boxes)
 cd "$REPO_DIR/services/web"
-command -v meteor >/dev/null || npm i -g meteor@3 2>/dev/null || true
-meteor npm install --also-dev 2>/dev/null || meteor npm install || true
+if ! command -v meteor >/dev/null; then
+  curl -LsSf https://install.meteor.com/ | sh || echo "WARN: meteor install failed — web UI will not start"
+fi
+if command -v meteor >/dev/null; then
+  meteor npm install --also-dev 2>/dev/null || meteor npm install || true
+fi
 
 # 4) env dir (root-owned) + secrets master key if missing
 install -d -m 750 -o "$SYSUSER" -g "$SYSUSER" "$ENV_DIR"

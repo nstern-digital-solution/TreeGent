@@ -88,6 +88,9 @@ validate() { # format checks; sets PROBLEMS (empty = clean)
     PROBLEMS="$PROBLEMS
 - TG_MONGO_URL must start with mongodb:// or mongodb+srv://"
   fi
+  if [ -n "${TG_FILES_S3_ENDPOINT:-}" ] && ! [[ "${TG_FILES_S3_ENDPOINT}" =~ ^https?:// ]]; then
+    say "note: S3 endpoint has no scheme — https:// will be assumed"
+  fi
   local n=0
   for v in TG_FILES_S3_ENDPOINT TG_FILES_S3_BUCKET TG_FILES_S3_ACCESS_KEY TG_FILES_S3_SECRET_KEY; do
     [ -n "${!v:-}" ] && n=$((n+1))
