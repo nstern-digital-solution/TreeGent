@@ -102,16 +102,17 @@ if [ -d "$BUNDLE" ]; then
     [ "$CODE" = "200" ] && ok "web bundle serves 200" || bad "web bundle HTTP $CODE (log: $WEBLOG)"
     grep -q "TreeGent" "$LAB/page.html" && ok "page contains app title" || bad "page missing title"
     # auth-chain proof: web's first-run method must RESPOND (the "..." hang
-    # class). Uses sockjs xhr_streaming over HTTP — no websocket handshake
-    # dependency (raw ws 404s behind some proxies; browsers fall back the
-    # same way).
-    RESP="$(curl -sN --max-time 15 -X POST \
-      -H 'Content-Type: application/json' \
-      -H 'Origin: http://127.0.0.1:3050' \
-      --data '[{"msg":"connect","version":"1","support":["1"]},{"msg":"method","method":"tg.userCount","id":"m1","params":[]}]' \
-      "http://127.0.0.1:3050/sockjs/000/rehearsal0/xhr_streaming" | head -c 2000)"
+    # class). SockJS xhr polling — verified protocol sequence (create, send
+    # connect, send method, poll for result).
+    S="rh$(date +%s)"
+    ddp() { curl -s --max-time 8 -X POST -H 'Content-Type: text/plain' \
+      -H "Origin: http://127.0.0.1:3050" --data "$1" "http://127.0.0.1:3050/sockjs/000/$S/$2"; }
+    ddp '' xhr >/dev/null
+    ddp '["{\"msg\":\"connect\",\"version\":\"1\",\"support\":[\"1\"]}"]' xhr_send >/dev/null
+    ddp '["{\"msg\":\"method\",\"method\":\"tg.userCount\",\"id\":\"m1\",\"params\":[]}"]' xhr_send >/dev/null
+    RESP="$(ddp '' xhr | head -c 400)"
     case "$RESP" in
-      *"result"*) ok "DDP method responds (bootstrap not hung)" ;;
+      *'"result"'*) ok "DDP method responds (bootstrap not hung)" ;;
       *) bad "DDP tg.userCount hung/failed: $(echo "$RESP" | head -c 120)" ;;
     esac
     kill "$WEB_PID" 2>/dev/null
