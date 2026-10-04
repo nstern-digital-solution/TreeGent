@@ -78,6 +78,17 @@ TG_FILES_S3_SECRET_KEY="$(prefill TG_FILES_S3_SECRET_KEY)"
 
 # Outbound mail via Resend — empty = dev sink (captured, not sent).
 TG_RESEND_API_KEY="$(prefill RESEND_API_KEY)"
+# mail domain: default = first verified Resend sending domain, else public URL host
+TG_MAIL_DOMAIN="$(prefill TG_MAIL_DOMAIN)"
+if [ -z "$TG_MAIL_DOMAIN" ] && [ -n "$TG_RESEND_API_KEY" ]; then
+  TG_MAIL_DOMAIN="$(curl -fsS --max-time 10 -H "Authorization: Bearer $TG_RESEND_API_KEY" \
+    https://api.resend.com/domains | python3 -c 'import json,sys;
+ds=[d.get("name") for d in json.load(sys.stdin).get("data",[]) if d.get("status")=="verified"]
+print(ds[0] if ds else "")' 2>/dev/null || true)"
+fi
+if [ -z "$TG_MAIL_DOMAIN" ] && [ -n "${TG_PUBLIC_URL:-}" ]; then
+  TG_MAIL_DOMAIN="$(echo "$TG_PUBLIC_URL" | sed 's|^https\?://||; s|/.*||; s|:.*||')"
+fi
 TMPL
   chmod 600 "$CONF"
 fi
@@ -177,6 +188,7 @@ fi
 [ -n "${TG_FILES_S3_ACCESS_KEY:-}" ] && set_kv TG_FILES_S3_ACCESS_KEY "$TG_FILES_S3_ACCESS_KEY"
 [ -n "${TG_FILES_S3_SECRET_KEY:-}" ] && set_kv TG_FILES_S3_SECRET_KEY "$TG_FILES_S3_SECRET_KEY"
 [ -n "${TG_RESEND_API_KEY:-}" ] && set_kv RESEND_API_KEY "$TG_RESEND_API_KEY"
+[ -n "${TG_MAIL_DOMAIN:-}" ] && set_kv TG_MAIL_DOMAIN "$TG_MAIL_DOMAIN"
 if [ "$PROXY" = "caddy" ]; then
   set_kv TG_PUBLIC_URL "https://$TG_DOMAIN"
 fi

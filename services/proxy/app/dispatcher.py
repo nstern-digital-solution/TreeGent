@@ -271,17 +271,54 @@ async def refresh_catalog() -> int:
         if p.get("kind") != "openai-compat":
             continue  # future provider kinds get their own fetchers
         base = p["base_url"].rstrip("/")
-        req = urllib.request.Request(
-            f"{base}/models",
-            headers={"Authorization": f"Bearer {provider_key(p)}"})
-        try:
-            resp = urllib.request.urlopen(req, timeout=30)
-            models = json.load(resp)["data"]
-        except urllib.error.HTTPError as e:
-            errors[name] = f"HTTP {e.code} from {base}/models"
-            continue
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError) as e:
-            errors[name] = f"{type(e).__name__}: {e}"[:200]
+        # Some OpenAI-compat gateways serve /models on a parent path (e.g.
+        # opencode: chat works on .../openai/v1, model list lives at
+        # .../inference/v1/models). Try base, then progressively shorter
+        # prefixes of the path.
+        import urllib.parse as _up
+        u = _up.urlsplit(base)
+        segs = [s for s in u.path.split("/") if s]
+        prefixes = ["/".join(segs[:i]) for i in range(len(segs), 0, -1)] + [""]
+        candidates = []
+        for pref in prefixes:
+            candidates.append(pref)
+            if not pref.endswith("v1"):
+                candidates.append((pref + "/v1").lstrip("/"))
+        models = None
+        last_err = ""
+        # some gateways (Cloudflare-fronted, e.g. opencode) 403 the default
+        # python-urllib UA — always send a real one
+        UA = "TreeGent/0.1 (+https://github.com/nstern-digital-solution/TreeGent)"
+        for cand in candidates:
+            try_path = f"{u.scheme}://{u.netloc}/{cand}".rstrip("/") + "/models"
+            req = urllib.request.Request(
+                try_path, headers={"Authorization": f"Bearer {provider_key(p)}",
+                                   "User-Agent": UA})
+            try:
+                resp = urllib.request.urlopen(req, timeout=20)
+                models = json.load(resp)["data"]
+                break
+            except urllib.error.HTTPError as e:
+                last_err = f"HTTP {e.code} from {try_path}"
+                if e.code in (401, 403):
+                    # some gateways (opencode) serve the public model list
+                    # without auth and reject bad bearers harder than none —
+                    # retry this path bare before walking on
+                    try:
+                        resp = urllib.request.urlopen(
+                            urllib.request.Request(try_path,
+                                headers={"User-Agent": UA}), timeout=20)
+                        models = json.load(resp)["data"]
+                        break
+                    except Exception:
+                        if e.code == 401:
+                            break   # key rejected outright — stop
+                        continue    # 403: keep walking shorter paths
+            except (urllib.error.URLError, TimeoutError,
+                    json.JSONDecodeError, KeyError) as e:
+                last_err = f"{type(e).__name__}: {e}"[:160]
+        if models is None:
+            errors[name] = last_err or "no /models endpoint found"
             continue
         for m in models:
             mid = m["id"]
@@ -290,6 +327,8 @@ async def refresh_catalog() -> int:
             arch = m.get("architecture") or {}
             mods = [x for x in (arch.get("input_modalities") or [])
                     if x in ("text", "image", "audio", "video", "file")]
+            if not mods:
+                mods = ["text"]   # gateway gave no modality info — assume text
             await db.model_catalog.update_one(
                 {"_id": f"{name}/{mid}"},
                 {"$set": {"provider": name, "listed": True,
