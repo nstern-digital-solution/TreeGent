@@ -40,6 +40,18 @@ chown -R "$SYSUSER:$SYSUSER" "$REPO_DIR"
 if [ -x "$METEOR_BIN" ]; then
   sudo -u "$SYSUSER" "$METEOR_BIN" npm install --also-dev 2>/dev/null || sudo -u "$SYSUSER" "$METEOR_BIN" npm install || true
 fi
+# 3b) PRODUCTION web bundle: meteor build -> plain node process.
+#     `meteor run --production` is a DEV server (file watcher, package
+#     server, ~2.4x memory) — never a production deployment.
+BUNDLE_DIR="$REPO_DIR/web-bundle"
+if [ -x "$METEOR_BIN" ]; then
+  echo "building production web bundle (a few minutes, once per upgrade)"
+  rm -rf "$BUNDLE_DIR"
+  (cd "$REPO_DIR/services/web" && sudo -u "$SYSUSER" "$METEOR_BIN" build "$BUNDLE_DIR" --directory)     || echo "WARN: bundle build failed — falling back to dev-mode web"
+  if [ -d "$BUNDLE_DIR/bundle/programs/server" ]; then
+    (cd "$BUNDLE_DIR/bundle/programs/server" && sudo -u "$SYSUSER" "$METEOR_BIN" npm install --production) || true
+  fi
+fi
 
 # 4) env dir (root-owned) + secrets master key if missing
 install -d -m 750 -o "$SYSUSER" -g "$SYSUSER" "$ENV_DIR"

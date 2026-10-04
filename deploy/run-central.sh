@@ -71,17 +71,29 @@ case "$BASE" in
 esac
 if [ -n "$QUERY" ]; then MU="$BASE?$QUERY"; else MU="$BASE"; fi
 
-METEOR_BIN="$(command -v meteor || true)"
-if [ -z "$METEOR_BIN" ] && [ -x "/home/treegent/.meteor/meteor" ]; then
-  METEOR_BIN="/home/treegent/.meteor/meteor"
-fi
-if [ -n "$METEOR_BIN" ]; then
+# web: PRODUCTION bundle with plain node (built by install.sh).
+# Fallback: meteor dev server only if the bundle is missing.
+WEB_BUNDLE="$REPO/web-bundle/bundle"
+NODE_BIN="$(ls -d /home/treegent/.meteor/packages/meteor-tool/*/mt-os.linux.x86_64/dev_bundle/bin/node 2>/dev/null | sort -V | tail -1)"
+[ -z "$NODE_BIN" ] && NODE_BIN="$(command -v node || true)"
+ROOT_URL="${TG_PUBLIC_URL:-http://localhost:3000}"
+if [ -d "$WEB_BUNDLE" ] && [ -n "$NODE_BIN" ]; then
   ORDER+=(web)
-  # cap node heap: the first build on a small box can otherwise pressure-kill neighbors
-  CMD[web]="cd $REPO/services/web && env NODE_OPTIONS=--max-old-space-size=1536 MONGO_URL=$MU $METEOR_BIN --production --port 3000"
+  CMD[web]="cd $WEB_BUNDLE && env MONGO_URL=$MU ROOT_URL=$ROOT_URL PORT=3000 NODE_OPTIONS=--max-old-space-size=1024 $NODE_BIN main.js"
   spawn web
 else
-  echo "[supervisor] meteor not found — web UI not started" >&2
+  METEOR_BIN="$(command -v meteor || true)"
+  if [ -z "$METEOR_BIN" ] && [ -x "/home/treegent/.meteor/meteor" ]; then
+    METEOR_BIN="/home/treegent/.meteor/meteor"
+  fi
+  if [ -n "$METEOR_BIN" ]; then
+    ORDER+=(web)
+    echo "[supervisor] WARN: production bundle missing — using meteor dev server" >&2
+    CMD[web]="cd $REPO/services/web && env NODE_OPTIONS=--max-old-space-size=1536 MONGO_URL=$MU ROOT_URL=$ROOT_URL $METEOR_BIN --production --port 3000"
+    spawn web
+  else
+    echo "[supervisor] no web runtime — web UI not started" >&2
+  fi
 fi
 
 # ---- supervisor loop: detect deaths, retry with backoff, heal ----
