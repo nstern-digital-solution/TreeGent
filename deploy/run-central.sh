@@ -98,7 +98,7 @@ done
 ROOT_URL="${TG_PUBLIC_URL:-http://localhost:3000}"
 if [ -d "$WEB_BUNDLE" ] && [ -n "$NODE_BIN" ]; then
   ORDER+=(web)
-  CMD[web]="cd $WEB_BUNDLE && env MONGO_URL=$MU ROOT_URL=$ROOT_URL PORT=$P_WEB NODE_OPTIONS=--max-old-space-size=1024 $NODE_BIN main.js"
+  CMD[web]="cd $WEB_BUNDLE && env MONGO_URL=$MU ROOT_URL=$ROOT_URL PORT=$P_WEB TG_SERVICE_TOKEN=${TG_SERVICE_TOKEN:-dev-service-token} NODE_OPTIONS=--max-old-space-size=1024 $NODE_BIN main.js"
   spawn web
 else
   METEOR_BIN="$(command -v meteor || true)"

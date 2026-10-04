@@ -5,10 +5,13 @@ import { TaskClasses, Providers, ModelCatalog, UsageEvents } from '../imports/pr
 import { Mailboxes, MailMessages, Approvals } from '../imports/mailCollections.js';
 import { Secrets, Files, RuntimeTurns } from '../imports/coreCollections.js';
 
-const CHAT_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.private.chatUrl) || 'http://127.0.0.1:8000';
-const SERVICE_TOKEN = (Meteor.settings && Meteor.settings.private && Meteor.settings.private.serviceToken) || 'dev-service-token';
-const PROXY_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.proxyUrl) || 'http://127.0.0.1:8001';
-const MAIL_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.mailUrl) || 'http://127.0.0.1:8002';
+// Server-only config. In production the supervisor injects env vars;
+// Meteor.settings is the DEV fallback. The service token must NEVER live in
+// anything client-reachable — env injection keeps it out of every bundle.
+const CHAT_URL = process.env.TG_CHAT_URL || (Meteor.settings && Meteor.settings.private && Meteor.settings.private.chatUrl) || 'http://127.0.0.1:8000';
+const SERVICE_TOKEN = process.env.TG_SERVICE_TOKEN || (Meteor.settings && Meteor.settings.private && Meteor.settings.private.serviceToken) || 'dev-service-token';
+const PROXY_URL = process.env.TG_PROXY_URL || (Meteor.settings && Meteor.settings.private && Meteor.settings.proxyUrl) || 'http://127.0.0.1:8001';
+const MAIL_URL = process.env.TG_MAIL_URL || (Meteor.settings && Meteor.settings.private && Meteor.settings.mailUrl) || 'http://127.0.0.1:8002';
 
 // --- helpers (Meteor 3: async collection access on the server) -----------
 

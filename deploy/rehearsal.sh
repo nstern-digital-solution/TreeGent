@@ -101,6 +101,27 @@ if [ -d "$BUNDLE" ]; then
     CODE="$(curl -s -o "$LAB/page.html" -w '%{http_code}' --max-time 4 http://127.0.0.1:3050)"
     [ "$CODE" = "200" ] && ok "web bundle serves 200" || bad "web bundle HTTP $CODE (log: $WEBLOG)"
     grep -q "TreeGent" "$LAB/page.html" && ok "page contains app title" || bad "page missing title"
+    # auth-chain proof: web's first-run method must RESPOND (the "…" hang class)
+    RESP="$(timeout 15 node -e "
+const WebSocket = require('$BUNDLE/programs/server/npm/node_modules/ws');
+const sid = Math.random().toString(36).slice(2,10);
+const ws = new WebSocket('ws://127.0.0.1:3050/sockjs/'+sid+'/websocket');
+let id = 'm'+Date.now();
+ws.on('open', () => ws.send(JSON.stringify({msg:'connect',version:'1',support:['1']})));
+ws.on('message', (d) => {
+  if (String(d).startsWith('a[')) {
+    const arr = JSON.parse(String(d).slice(1));
+    for (const m of arr) {
+      if (m.msg === 'connected') ws.send(JSON.stringify({msg:'method', method:'tg.userCount', id, params:[]}));
+      if (m.id === id) { console.log(JSON.stringify(m).slice(0,120)); process.exit(0); }
+    }
+  }
+});
+setTimeout(() => { console.log('NO-RESPONSE'); process.exit(1); }, 14000);" 2>/dev/null || echo NO-RESPONSE)"
+    case "$RESP" in
+      *"result"*) ok "DDP method responds (bootstrap not hung)" ;;
+      *) bad "DDP tg.userCount hung/failed: $RESP" ;;
+    esac
     kill "$WEB_PID" 2>/dev/null
   fi
 else
