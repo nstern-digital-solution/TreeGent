@@ -74,7 +74,18 @@ if [ -n "$QUERY" ]; then MU="$BASE?$QUERY"; else MU="$BASE"; fi
 # web: PRODUCTION bundle with plain node (built by install.sh).
 # Fallback: meteor dev server only if the bundle is missing.
 WEB_BUNDLE="$REPO/web-bundle/bundle"
-NODE_BIN="$(ls -d /home/treegent/.meteor/packages/meteor-tool/*/mt-os.linux.x86_64/dev_bundle/bin/node 2>/dev/null | sort -V | tail -1)"
+# Node version: prefer the one the bundle itself pins (star.json engines).
+# Meteor bundles are NOT portable across node majors (v24 crashes a v22 bundle).
+NODE_BIN=""
+if [ -f "$WEB_BUNDLE/star.json" ]; then
+  WANT_NODE="$(python3 -c "import json;print(json.load(open('$WEB_BUNDLE/star.json'))['nodeVersion'])" 2>/dev/null || true)"
+fi
+for CAND in /home/treegent/.meteor/packages/meteor-tool/*/mt-os.linux.x86_64/dev_bundle/bin/node; do
+  [ -x "$CAND" ] || continue
+  CV="$("$CAND" --version 2>/dev/null || echo v0)"
+  if [ -n "${WANT_NODE:-}" ] && [ "$CV" = "$WANT_NODE" ]; then NODE_BIN="$CAND"; break; fi
+  [ -z "$NODE_BIN" ] && NODE_BIN="$CAND"
+done
 [ -z "$NODE_BIN" ] && NODE_BIN="$(command -v node || true)"
 ROOT_URL="${TG_PUBLIC_URL:-http://localhost:3000}"
 if [ -d "$WEB_BUNDLE" ] && [ -n "$NODE_BIN" ]; then
