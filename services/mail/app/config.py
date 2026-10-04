@@ -17,11 +17,13 @@ Transport is DATA: adapter rows choose sink (dev capture) or Resend
 import os
 
 from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    mongo_url: str = "mongodb://127.0.0.1:27017/?directConnection=true"
+    mongo_url: str = Field(default="mongodb://127.0.0.1:27017/?directConnection=true",
+                       validation_alias=AliasChoices("TG_MAIL_MONGO_URL", "TG_MONGO_URL"))
     db_name: str = "treegent"
     bind_host: str = "127.0.0.1"
     port: int = 8002
@@ -29,7 +31,7 @@ class Settings(BaseSettings):
     chat_url: str = "http://127.0.0.1:8000"
     mail_domain: str = "treegent.local"  # dev default; real = deployment data
 
-    model_config = {"env_prefix": "TG_MAIL_", "env_file": ".env"}
+    model_config = {"env_prefix": "TG_MAIL_", "env_file": ".env", "extra": "ignore"}
 
 
 def env_fallback(name: str) -> str:

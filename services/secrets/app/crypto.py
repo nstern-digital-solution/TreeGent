@@ -12,6 +12,10 @@ _fernet: Fernet | None = None
 
 
 def _load_or_create_key() -> bytes:
+    import os as _os
+    env_key = _os.environ.get("TG_SECRETS_MASTER_KEY", "").strip()
+    if env_key:
+        return env_key.encode()
     path = settings.key_file
     if os.path.exists(path):
         with open(path, "rb") as f:

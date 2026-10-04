@@ -1,11 +1,13 @@
 import os
 
 from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    mongo_url: str = "mongodb://127.0.0.1:27017/?directConnection=true"
+    mongo_url: str = Field(default="mongodb://127.0.0.1:27017/?directConnection=true",
+                       validation_alias=AliasChoices("TG_RUNTIME_MONGO_URL", "TG_MONGO_URL"))
     db_name: str = "treegent"
     bind_host: str = "127.0.0.1"
     port: int = 8010
@@ -20,11 +22,12 @@ class Settings(BaseSettings):
     heartbeat_s: int = 3600            # R44: default 60 min, per-agent override
     exec_timeout_s: int = 600          # R46: foreground cap 10 min
     exec_user: str = ""                 # R46: separate linux user; sudo -n -u
-    exec_enabled: bool = True           # R48: False on reserved hosts
+    exec_enabled: bool = True            # R48: False on reserved hosts
+    # (TG_RUNTIME_EXEC_ENABLED shared name handled by prefix already)
     max_turn_steps: int = 24           # tool-call steps per turn before forced stop
     search_backend: str = ""           # "" = web search disabled (R42)
 
-    model_config = {"env_prefix": "TG_RUNTIME_", "env_file": ".env"}
+    model_config = {"env_prefix": "TG_RUNTIME_", "env_file": ".env", "extra": "ignore"}
 
 
 settings = Settings()

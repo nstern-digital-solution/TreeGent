@@ -6,8 +6,8 @@ from .config import env_fallback, settings
 
 def s3_kwargs() -> dict:
     kw = {
-        "aws_access_key_id": env_fallback(settings.s3_access_key_env),
-        "aws_secret_access_key": env_fallback(settings.s3_secret_key_env),
+        "aws_access_key_id": settings.s3_access_key or env_fallback("TG_S3_ACCESS_KEY"),
+        "aws_secret_access_key": settings.s3_secret_key or env_fallback("TG_S3_SECRET_KEY"),
     }
     if settings.s3_endpoint:
         kw["endpoint_url"] = settings.s3_endpoint

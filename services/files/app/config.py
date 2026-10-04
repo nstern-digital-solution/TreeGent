@@ -1,24 +1,26 @@
 import os
 
 from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    mongo_url: str = "mongodb://127.0.0.1:27017/?directConnection=true"
+    mongo_url: str = Field(default="mongodb://127.0.0.1:27017/?directConnection=true",
+                       validation_alias=AliasChoices("TG_FILES_MONGO_URL", "TG_MONGO_URL"))
     db_name: str = "treegent"
     bind_host: str = "127.0.0.1"
     port: int = 8004
     service_token: str = "dev-service-token"
 
     # S3 host is USER-PROVIDED (R41): endpoint/bucket/keys from env, like Mongo.
-    s3_endpoint: str = ""            # empty = default AWS; or https://host:port
-    s3_bucket: str = "treegent"
-    s3_region: str = ""
-    s3_access_key_env: str = "TG_S3_ACCESS_KEY"   # env var NAMES, not values
-    s3_secret_key_env: str = "TG_S3_SECRET_KEY"
+    s3_endpoint: str = Field(default="", validation_alias=AliasChoices("TG_FILES_S3_ENDPOINT", "TG_S3_ENDPOINT"))
+    s3_bucket: str = Field(default="treegent", validation_alias=AliasChoices("TG_FILES_S3_BUCKET", "TG_S3_BUCKET"))
+    s3_region: str = Field(default="", validation_alias=AliasChoices("TG_FILES_S3_REGION", "TG_S3_REGION"))
+    s3_access_key: str = Field(default="", validation_alias=AliasChoices("TG_FILES_S3_ACCESS_KEY"))
+    s3_secret_key: str = Field(default="", validation_alias=AliasChoices("TG_FILES_S3_SECRET_KEY"))
 
-    model_config = {"env_prefix": "TG_FILES_", "env_file": ".env"}
+    model_config = {"env_prefix": "TG_FILES_", "env_file": ".env", "extra": "ignore"}
 
 
 def env_fallback(name: str) -> str:

@@ -25,8 +25,20 @@ pids+=($!)
 
 cd "$REPO/services/web"
 METEOR_PORT=3000
+# Meteor: db name must be IN the URL (default /meteor otherwise); use the
+# same Mongo the services use, from the shared env file.
+MU="${TG_WEB_MONGO_URL:-${TG_MONGO_URL:-mongodb://127.0.0.1:27017}}"
+BASE="${MU%%\?*}"          # everything before the first ?
+QUERY="${MU#*\?}"          # everything after (may equal MU if no ?)
+[ "$QUERY" = "$MU" ] && QUERY=""
+BASE="${BASE%/}"           # strip trailing slash (Atlas SRV strings have one)
+case "$BASE" in
+  *"/treegent") : ;;       # db name already present
+  *) BASE="$BASE/treegent" ;;
+esac
+if [ -n "$QUERY" ]; then MU="$BASE?$QUERY"; else MU="$BASE"; fi
 if command -v meteor >/dev/null; then
-  meteor --production --port "$METEOR_PORT" &
+  MONGO_URL="$MU" meteor --production --port "$METEOR_PORT" &
   pids+=($!)
 else
   echo "meteor not found — web UI not started" >&2

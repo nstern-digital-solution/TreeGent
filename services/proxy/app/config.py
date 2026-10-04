@@ -1,17 +1,19 @@
 import os
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    mongo_url: str = "mongodb://127.0.0.1:27017/?directConnection=true"
+    mongo_url: str = Field(default="mongodb://127.0.0.1:27017/?directConnection=true",
+                       validation_alias=AliasChoices("TG_PROXY_MONGO_URL", "TG_MONGO_URL"))
     db_name: str = "treegent"
     bind_host: str = "127.0.0.1"
     port: int = 8001
     service_token: str = "dev-service-token"
     chat_url: str = "http://127.0.0.1:8000"
 
-    model_config = {"env_prefix": "TG_PROXY_", "env_file": ".env"}
+    model_config = {"env_prefix": "TG_PROXY_", "env_file": ".env", "extra": "ignore"}
 
 
 def env_fallback(name: str) -> str:
