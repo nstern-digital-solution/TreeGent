@@ -219,7 +219,10 @@ if [ "$PROXY" = "caddy" ]; then
 fi
 
 say "starting TreeGent"
-systemctl enable --now treegent
+systemctl enable treegent >/dev/null 2>&1 || true
+# restart (not just enable --now): re-runs MUST activate freshly pulled code;
+# enable --now alone is a no-op on an already-running unit
+systemctl restart treegent
 sleep 5
 
 say "status"
