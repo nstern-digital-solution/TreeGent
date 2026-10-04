@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Actors } from '../collections.js';
+import { Secrets } from '../coreCollections.js';
 
 const call = (path, method, body, asActorId) =>
   Meteor.callAsync('secrets.api', path, method, body, asActorId);
@@ -12,7 +13,6 @@ export function SecretsPane() {
     const u = Meteor.user();
     return u ? Actors.findOne({ username: u.username }) : null;
   }, []);
-  const [items, setItems] = useState(null);
   const [q, setQ] = useState('');
   const [msg, setMsg] = useState(null);
   const [err, setErr] = useState(null);
@@ -22,15 +22,18 @@ export function SecretsPane() {
 
   const actors = useTracker(() => Actors.find().fetch(), []);
 
-  const refresh = async (query = q) => {
-    setErr(null);
-    try {
-      const r = await call(`/secrets?q=${encodeURIComponent(query)}`, 'GET');
-      setItems(r);
-    } catch (ex) { setErr(ex.reason || ex.message); }
-  };
-
-  React.useEffect(() => { if (me) refresh(''); }, [me && me._id]);
+  // LIVE: oplog-reactive metadata (value_enc never published); search runs
+  // client-side in Minimongo -> instant, no refresh button.
+  const allSecrets = useTracker(() => {
+    const sub = Meteor.subscribe('secretsMeta');
+    return Secrets.find().fetch();
+  }, []);
+  const items = (allSecrets || []).map((s) => ({ ...s, id: s._id })).filter((s) => {
+    if (!q) return true;
+    const rx = new RegExp(q.replace(/[^\w@.\- ]/g, '\\$&'), 'i');
+    return rx.test(s.name || '') || rx.test(s.username || '') ||
+           rx.test(s.url || '');
+  });
 
   const run = async (fn) => {
     setMsg(null); setErr(null);
@@ -51,7 +54,6 @@ export function SecretsPane() {
     await run(async () => {
       await call('/secrets', 'POST', form);
       setForm(null);
-      refresh('');
       return `Secret ${form.name} saved.`;
     });
   };
@@ -68,10 +70,8 @@ export function SecretsPane() {
         subordinate secret via the actor picker (reach-down).
       </p>
       <div className="secret-toolbar">
-        <input placeholder="search name / username / url / notes" value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && refresh()} />
-        <button className="btn small" onClick={() => refresh()}>search</button>
+        <input placeholder="search (live)" value={q}
+          onChange={(e) => setQ(e.target.value)} />
         <button className="btn small" onClick={() => setForm({
           name: '', value: '', username: '', url: '', notes: '', shared_with: [],
         })}>new secret</button>
@@ -112,7 +112,6 @@ export function SecretsPane() {
                 {s.owner === me._id && (
                   <button className="btn small danger" onClick={() => run(async () => {
                     await call(`/secrets/${s.id}`, 'DELETE', null);
-                    refresh('');
                     return `deleted ${s.name}`;
                   })}>delete</button>
                 )}

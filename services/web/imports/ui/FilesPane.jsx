@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Actors } from '../collections.js';
+import { Files } from '../coreCollections.js';
 
 const call = (path, method, body, asActorId) =>
   Meteor.callAsync('files.api', path, method, body, asActorId);
@@ -12,23 +13,17 @@ export function FilesPane() {
     const u = Meteor.user();
     return u ? Actors.findOne({ username: u.username }) : null;
   }, []);
-  const [items, setItems] = useState(null);
+
   const [q, setQ] = useState('');
+  const items = useTracker(() => {
+    Meteor.subscribe('filesMeta');
+    return Files.find().fetch().map((f) => ({ ...f, id: f._id }));
+  }, []).filter((f) => !q || (f.name || '').toLowerCase().includes(q.toLowerCase()));
   const [msg, setMsg] = useState(null);
   const [err, setErr] = useState(null);
   const [target, setTarget] = useState('');
   const [shareFor, setShareFor] = useState(null); // file being shared
   const actors = useTracker(() => Actors.find().fetch(), []);
-
-  const refresh = async (query = q) => {
-    setErr(null);
-    try {
-      const r = await call(`/files?q=${encodeURIComponent(query)}`, 'GET', null, target || undefined);
-      setItems(r);
-    } catch (ex) { setErr(ex.reason || ex.message); }
-  };
-
-  React.useEffect(() => { if (me) refresh(''); }, [me && me._id, target]);
 
   const run = async (fn) => {
     setMsg(null); setErr(null);
@@ -47,7 +42,6 @@ export function FilesPane() {
       });
       const r = await call('/files', 'UPLOAD',
         { name: f.name, type: f.type, b64 }, target || undefined);
-      refresh();
       return `Uploaded ${r.name} (${r.size} bytes)`;
     });
   };
@@ -86,8 +80,7 @@ export function FilesPane() {
       <div className="secret-toolbar">
         <input placeholder="search files" value={q}
           onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && refresh()} />
-        <button className="btn small" onClick={() => refresh()}>search</button>
+          onChange={(e) => setQ(e.target.value)} />
         <label className="btn small">
           upload
           <input type="file" hidden onChange={upload} />
@@ -119,8 +112,7 @@ export function FilesPane() {
                 {f.owner === (target || me._id) && (
                   <button className="btn small danger" onClick={() => run(async () => {
                     await call(`/files/${f.id}`, 'DELETE', null, target || undefined);
-                    refresh();
-                    return `deleted ${f.name}`;
+                                  return `deleted ${f.name}`;
                   })}>delete</button>
                 )}
               </td>
@@ -150,8 +142,7 @@ export function FilesPane() {
               await call(`/files/${shareFor.id}/share`, 'PUT',
                 { with: shareFor.shared_with }, target || undefined);
               setShareFor(null);
-              refresh();
-              return 'sharing updated';
+                      return 'sharing updated';
             })}>save</button>
             <button className="btn small" onClick={() => setShareFor(null)}>cancel</button>
           </div>

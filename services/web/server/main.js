@@ -3,6 +3,7 @@ import { Accounts } from 'meteor/accounts-base';
 import { Actors, Conversations, Messages } from '../imports/collections.js';
 import { TaskClasses, Providers, ModelCatalog, UsageEvents } from '../imports/proxyCollections.js';
 import { Mailboxes, MailMessages, Approvals } from '../imports/mailCollections.js';
+import { Secrets, Files, RuntimeTurns } from '../imports/coreCollections.js';
 
 const CHAT_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.private.chatUrl) || 'http://127.0.0.1:8000';
 const SERVICE_TOKEN = (Meteor.settings && Meteor.settings.private && Meteor.settings.private.serviceToken) || 'dev-service-token';
@@ -123,9 +124,39 @@ Meteor.publish('approvalsData', function () {
   return Approvals.find({}, { sort: { created_at: -1 }, limit: 200 });
 });
 
+// --- live metadata for Secrets / Files / Agents panes -------------------
+
+Meteor.publish('secretsMeta', async function () {
+  if (!this.userId) return this.ready();
+  const user = await Meteor.users.findOneAsync(this.userId);
+  const me = await myActor(user);
+  if (!me) return this.ready();
+  // R40 own-scope: own + shared-with-me. Superiors do NOT see subtree here.
+  return Secrets.find(
+    { $or: [{ owner: me._id }, { shared_with: me._id }] },
+    { fields: { value_enc: 0 } });   // ciphertext never leaves the server
+});
+
+Meteor.publish('filesMeta', async function () {
+  if (!this.userId) return this.ready();
+  const user = await Meteor.users.findOneAsync(this.userId);
+  const me = await myActor(user);
+  if (!me) return this.ready();
+  return Files.find(
+    { $or: [{ owner: me._id }, { shared_with: me._id }] });
+});
+
+Meteor.publish('agentTurns', function (agentId, limit) {
+  if (!this.userId || !agentId) return this.ready();
+  return RuntimeTurns.find({ agent_id: agentId },
+    { sort: { started: -1 }, limit: limit || 50 });
+});
+
 // --- accounts bootstrap (R28: admin-provisioned) -----------------------
 
 Meteor.methods({
+
+
   async 'tg.userCount'() {
     return await Meteor.users.find().countAsync();
   },
@@ -210,9 +241,10 @@ Meteor.methods({
     check(path, String); check(method, String);
     const caller = await Meteor.userAsync();
     if (!caller || !caller.isAdmin) throw new Meteor.Error('forbidden', 'admin only');
+    const actor = ((await myActor(caller)) || {})._id || '';
     const res = await fetch(`${PROXY_URL}${path}`, {
       method,
-      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN },
+      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN, 'X-Actor-Id': actor },
       body: body ? JSON.stringify(body) : undefined,
     });
     const data = await res.json().catch(() => ({}));
@@ -227,11 +259,12 @@ Meteor.methods({
     check(path, String); check(method, String);
     const caller = await Meteor.userAsync();
     if (!caller) throw new Meteor.Error('forbidden', 'login required');
+    const actor = actorId || ((await myActor(caller)) || {})._id || '';
     let url = `${MAIL_URL}${path}`;
     if (actorId) url += (path.includes('?') ? '&' : '?') + `actor_id=${encodeURIComponent(actorId)}`;
     const res = await fetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN },
+      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN, 'X-Actor-Id': actor },
       body: body ? JSON.stringify(body) : undefined,
     });
     const data = await res.json().catch(() => ({}));
@@ -262,7 +295,8 @@ Meteor.methods({
     url += (path.includes('?') ? '&' : '?') + `caller_id=${encodeURIComponent(actor)}`;
     const res = await fetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN },
+      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN,
+                 'X-Actor-Id': actor },
       body: body && method !== 'GET' ? JSON.stringify(body) : undefined,
     });
     const data = await res.json().catch(() => ({}));
@@ -282,7 +316,7 @@ Meteor.methods({
     const RUNTIME_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.private.runtimeUrl) || 'http://127.0.0.1:8010';
     const res = await fetch(`${RUNTIME_URL}${path}`, {
       method,
-      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN },
+      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN, 'X-Actor-Id': actor },
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -326,7 +360,7 @@ Meteor.methods({
     url += (path.includes('?') ? '&' : '?') + `caller_id=${encodeURIComponent(actor)}`;
     const res = await fetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN },
+      headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN, 'X-Actor-Id': actor },
       body: body && method !== 'GET' ? JSON.stringify(body) : undefined,
     });
     if (path.includes('/download')) {

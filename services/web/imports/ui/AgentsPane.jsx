@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Actors } from '../collections.js';
+import { RuntimeTurns } from '../coreCollections.js';
 
 const call = (path, method, body, asActorId) =>
   Meteor.callAsync('runtime.api', path, method, body, asActorId);
@@ -10,23 +11,19 @@ export function AgentsPane() {
   const actors = useTracker(() => Actors.find({}).fetch(), []);
   const agents = actors.filter((a) => a.kind === 'agent');
   const [selected, setSelected] = useState('');
-  const [turns, setTurns] = useState([]);
+
   const [expanded, setExpanded] = useState(null); // turn id with details open
   const [msg, setMsg] = useState('');
   const me = useTracker(() => Meteor.user(), {});
   const isAdmin = me && me.isAdmin;
 
-  const load = async (agentId) => {
-    setSelected(agentId);
-    try {
-      const r = await call(`/internal/history/${agentId}?limit=50`, 'GET');
-      setTurns(r.turns || []);
-      setMsg('');
-    } catch (e) {
-      setTurns([]);
-      setMsg('ERROR: ' + (e.reason || e.message));
-    }
-  };
+  const turns = useTracker(() => {
+    if (!selected) return [];
+    Meteor.subscribe('agentTurns', selected, 50);
+    return RuntimeTurns.find({ agent_id: selected },
+      { sort: { started: -1 }, limit: 50 }).fetch();
+  }, [selected]);
+  const load = (agentId) => setSelected(agentId);
 
   if (!isAdmin) {
     return <div className="pane"><p className="muted">Admin only.</p></div>;
