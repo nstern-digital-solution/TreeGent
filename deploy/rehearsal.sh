@@ -139,6 +139,28 @@ else
   bad "could not find runtime pid for kill test"
 fi
 
+# ---------- 4b. caddy websocket path (only if caddy binary available) ----------
+echo "[4b/5] caddy sockjs websocket forwarding"
+CADDY_BIN="$(command -v caddy || echo "$REPO/deploy/.caddy-lab")"
+if [ -x "$CADDY_BIN" ]; then
+  sed "s|treegent.example.com|127.0.0.1:8443|" "$REPO/deploy/Caddyfile.example" \
+    | sed "s|127.0.0.1:3000|127.0.0.1:3050|" > "$LAB/Caddyfile"
+  XDG_DATA_HOME="$LAB/caddy-data" XDG_CONFIG_HOME="$LAB/caddy-cfg" \
+    "$CADDY_BIN" run --config "$LAB/Caddyfile" --adapter caddyfile >"$LAB/caddy.log" 2>&1 &
+  CADDY_PID=$!
+  sleep 4
+  CODE="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 6 \
+    -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+    -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+    -H 'Origin: https://127.0.0.1:8443' \
+    'https://127.0.0.1:8443/sockjs/000/rehearsal-ws-test/websocket')"
+  [ "$CODE" = "101" ] && ok "sockjs websocket upgrade through caddy (101)" \
+                      || bad "ws upgrade via caddy: HTTP $CODE (expected 101)"
+  kill "$CADDY_PID" 2>/dev/null
+else
+  echo "  SKIP: no caddy binary (websocket-forwarding untested this run)"
+fi
+
 # ---------- 5. verdict ----------
 echo
 echo "== verdict: $PASS passed, $FAIL failed =="
