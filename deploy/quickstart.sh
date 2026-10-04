@@ -10,7 +10,7 @@ set -euo pipefail
 say()  { printf '\033[1;36m== %s\033[0m\n' "$*"; }
 ask_secret_or_default() { # ask_secret_or_default VAR PROMPT DEFAULT (no echo; empty = default)
   local __v
-  read -r -s -p "$2 [$3]: " __v >&2
+  read -r -s -p "$2 [$3]: " __v </dev/tty || true
   printf '\n' >&2
   printf -v "$1" '%s' "${__v:-$3}"
 }
