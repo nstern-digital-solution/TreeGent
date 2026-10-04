@@ -265,6 +265,7 @@ async def refresh_catalog() -> int:
     designations ['task'], rank 0 — an admin promotes models to 'agent'
     and sets ranks in the dashboard."""
     n = 0
+    errors: dict[str, str] = {}
     ready = await ready_providers()
     for name, p in ready.items():
         if p.get("kind") != "openai-compat":
@@ -273,7 +274,15 @@ async def refresh_catalog() -> int:
         req = urllib.request.Request(
             f"{base}/models",
             headers={"Authorization": f"Bearer {provider_key(p)}"})
-        models = json.load(urllib.request.urlopen(req, timeout=30))["data"]
+        try:
+            resp = urllib.request.urlopen(req, timeout=30)
+            models = json.load(resp)["data"]
+        except urllib.error.HTTPError as e:
+            errors[name] = f"HTTP {e.code} from {base}/models"
+            continue
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError) as e:
+            errors[name] = f"{type(e).__name__}: {e}"[:200]
+            continue
         for m in models:
             mid = m["id"]
             if ":batch" in mid or ":free" in mid:
@@ -294,4 +303,6 @@ async def refresh_catalog() -> int:
     await db.model_catalog.update_many(
         {"provider": {"$nin": list(ready.keys())}},
         {"$set": {"listed": False}})
+    if errors:
+        raise ProviderError("; ".join(f"{k}: {v}" for k, v in errors.items()))
     return n

@@ -10,6 +10,15 @@ from .jobs import router as jobs_router
 
 app = FastAPI(title="TreeGent proxy", version="0.1.0")
 
+@app.exception_handler(dispatcher.ProviderError)
+async def provider_error_handler(request, exc: dispatcher.ProviderError):
+    """Surface provider/catalog problems as a readable 502, not a bare 500."""
+    from fastapi import Response
+    import json as _json
+    return Response(content=_json.dumps({"detail": str(exc)}),
+                    status_code=502, media_type="application/json")
+
+
 
 @app.on_event("startup")
 async def _startup() -> None:
