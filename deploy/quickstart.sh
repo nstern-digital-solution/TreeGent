@@ -160,6 +160,8 @@ fi
 set_kv() { sed -i "s|^$1=.*|$1=$2|" "$TOKEN_FILE"; }
 set_kv TG_SERVICE_TOKEN "$TG_SERVICE_TOKEN"
 [ -n "${TG_MONGO_URL:-}" ] && set_kv TG_MONGO_URL "$TG_MONGO_URL"
+# kill the legacy localhost default that shadowed TG_MONGO_URL for web
+set_kv TG_WEB_MONGO_URL ""
 if [ -n "${TG_FILES_S3_ENDPOINT:-}" ]; then
   set_kv TG_FILES_S3_ENDPOINT "$TG_FILES_S3_ENDPOINT"
   set_kv TG_FILES_S3_BUCKET "${TG_FILES_S3_BUCKET:-treegent}"

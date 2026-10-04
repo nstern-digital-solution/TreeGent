@@ -32,6 +32,9 @@ echo "[1/5] env.example hygiene + service imports"
 ENVF="$LAB/env"
 sed -E 's/[[:space:]]+#.*$//' "$REPO/deploy/env.example" > "$ENVF"
 if grep -qE '=.*#' "$ENVF"; then bad "inline comments survive sanitization"; else ok "env sanitized"; fi
+if grep -qE '^TG_[A-Z_]*MONGO_URL=.{3,}' <(grep -v '^TG_MONGO_URL=' "$ENVF"); then
+  bad "a second MONGO_URL default shadows TG_MONGO_URL (web-goes-localhost class)"
+else ok "no shadowing mongo defaults"; fi
 (cd "$REPO" && set -a && . "$ENVF" && set +a && \
   uv run python3 -c "
 import importlib
