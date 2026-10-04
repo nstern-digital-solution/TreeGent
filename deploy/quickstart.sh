@@ -47,38 +47,86 @@ say "multi-agent company — central host installer"
 say "press Enter everywhere for defaults — anything skipped now"
 say "can be added later by re-running this script"
 
-# ---------- questions ----------
-ask TG_DOMAIN "" "(no domain — plain http on :3000)"
+# ---------- config file (edit freely, save, resume anytime) ----------
+CONF_DIR=/etc/treegent
+CONF=$CONF_DIR/treegent.conf
+ENVF=/opt/TreeGent/.env
+mkdir -p "$CONF_DIR"
+
+prefill() { [ -f "$ENVF" ] && grep -m1 "^$1=" "$ENVF" | cut -d= -f2- || true; }
+
+if [ ! -f "$CONF" ]; then
+  say "writing config template: $CONF"
+  cat > "$CONF" <<TMPL
+# TreeGent deployment config
+# Edit any order, leave empty what you skip, save + exit to continue.
+# Re-run the quickstart anytime: it opens this file again and re-applies.
+# Values already detected from a previous install are prefilled below.
+
+# Public domain for the web UI (empty = http://<server-ip>:3000)
+TG_DOMAIN="$(prefill TG_DOMAIN)"
+
+# MongoDB — empty = install a bundled local replica set on this box.
+# Or paste ANY connection string (mongodb:// or mongodb+srv://, e.g. Atlas).
+TG_MONGO_URL="$(prefill TG_MONGO_URL)"
+
+# S3 for the files service — leave ALL FOUR empty to skip (add later).
+TG_FILES_S3_ENDPOINT="$(prefill TG_FILES_S3_ENDPOINT)"
+TG_FILES_S3_BUCKET="$(prefill TG_FILES_S3_BUCKET)"
+TG_FILES_S3_ACCESS_KEY="$(prefill TG_FILES_S3_ACCESS_KEY)"
+TG_FILES_S3_SECRET_KEY="$(prefill TG_FILES_S3_SECRET_KEY)"
+
+# Outbound mail via Resend — empty = dev sink (captured, not sent).
+TG_RESEND_API_KEY="$(prefill RESEND_API_KEY)"
+TMPL
+  chmod 600 "$CONF"
+fi
+
+validate() { # format checks; sets PROBLEMS (empty = clean)
+  PROBLEMS=""
+  if [ -n "${TG_MONGO_URL:-}" ] && ! [[ "${TG_MONGO_URL}" =~ ^mongodb(\+srv)?:// ]]; then
+    PROBLEMS="$PROBLEMS
+- TG_MONGO_URL must start with mongodb:// or mongodb+srv://"
+  fi
+  local n=0
+  for v in TG_FILES_S3_ENDPOINT TG_FILES_S3_BUCKET TG_FILES_S3_ACCESS_KEY TG_FILES_S3_SECRET_KEY; do
+    [ -n "${!v:-}" ] && n=$((n+1))
+  done
+  if [ "$n" -gt 0 ] && [ "$n" -lt 4 ]; then
+    PROBLEMS="$PROBLEMS
+- S3 is partially configured ($n/4 values) — fill all four or empty all four"
+  fi
+}
+
+if [ -e /dev/tty ]; then
+  while :; do
+    say "opening $CONF in your editor — edit, then save & exit to continue"
+    "${EDITOR:-$(command -v nano || command -v vi || echo vi)}" "$CONF" </dev/tty >/dev/tty 2>&1 || true
+    set -a; . "$CONF"; set +a
+    validate
+    if [ -z "$PROBLEMS" ]; then break; fi
+    say "problems found:"
+    echo "$PROBLEMS" >&2
+    local_r=""
+    read -r -p "press 'e' to edit again, Enter to continue anyway, 'a' to abort: " local_r </dev/tty || true
+    [ "$local_r" = "a" ] && exit 1
+    [ "$local_r" = "e" ] && continue
+    break
+  done
+else
+  say "no terminal — using $CONF as-is (edit it and re-run to change)"
+  set -a; . "$CONF"; set +a
+fi
+
+if [ -z "${TG_MONGO_URL:-}" ]; then TG_MONGO_MODE=bundled; else TG_MONGO_MODE=external; fi
 if [ -n "${TG_DOMAIN:-}" ]; then
   SCHEME="https"; PROXY="caddy"
 else
   SCHEME="http"; PROXY="none"
 fi
-# Mongo: Enter = bundled local single-node replica set, or paste ANY
-# connection string (Atlas SRV, self-hosted, ...) to bring your own.
-ask_secret_or_default TG_MONGO_URL "Mongo: Enter = bundled local, or paste connection string (mongodb:// or mongodb+srv://)" ""
-if [ -z "${TG_MONGO_URL:-}" ]; then
-  TG_MONGO_MODE=bundled
-else
-  TG_MONGO_MODE=external
-fi
-
-# internal token: generated silently, never asked (implementation detail)
-TG_SERVICE_TOKEN="$(head -c32 /dev/urandom | base64 | tr -d '=+/' | head -c 40)"
-# NOTE: inference providers (multiple, any keys/URLs) are added at RUNTIME
-# in the web UI Models tab — stored encrypted, nothing needed at deploy.
-ask TG_EXTRAS "Configure optional extras now — S3 files / Resend mail? (Enter = skip both)" "skip"
-if [ "${TG_EXTRAS:-skip}" = "skip" ]; then
-  TG_FILES_S3_ENDPOINT=""
-else
-ask TG_FILES_S3_ENDPOINT "S3 endpoint" "(enter = skip files service)"
-[ "$TG_FILES_S3_ENDPOINT" = "" ] || ask TG_FILES_S3_BUCKET "S3 bucket" "treegent"
-if [ -n "${TG_FILES_S3_BUCKET:-}" ] && [ "$TG_FILES_S3_BUCKET" != "treegent" ] || [ -n "${TG_FILES_S3_ENDPOINT:-}" ] && [ "${TG_FILES_S3_ENDPOINT:-}" != "" ]; then
-  ask_secret TG_FILES_S3_ACCESS_KEY "S3 access key"
-  ask_secret TG_FILES_S3_SECRET_KEY "S3 secret key"
-fi
-ask_secret TG_RESEND_API_KEY "RESEND_API_KEY for outbound mail (enter = dev sink)"
-fi
+# internal token: kept from previous install if any, else generated silently
+TG_SERVICE_TOKEN="$(prefill TG_SERVICE_TOKEN)"
+[ -n "$TG_SERVICE_TOKEN" ] || TG_SERVICE_TOKEN="$(head -c32 /dev/urandom | base64 | tr -d '=+/' | head -c 40)"
 
 # ---------- install ----------
 say "installing base packages"
@@ -103,7 +151,17 @@ fi
 set_kv() { sed -i "s|^$1=.*|$1=$2|" "$TOKEN_FILE"; }
 set_kv TG_SERVICE_TOKEN "$TG_SERVICE_TOKEN"
 [ -n "${TG_MONGO_URL:-}" ] && set_kv TG_MONGO_URL "$TG_MONGO_URL"
-[ -n "${TG_FILES_S3_ENDPOINT:-}" ] && [ "$TG_FILES_S3_ENDPOINT" != "" ] && set_kv TG_FILES_S3_ENDPOINT "$TG_FILES_S3_ENDPOINT"
+if [ -n "${TG_FILES_S3_ENDPOINT:-}" ]; then
+  set_kv TG_FILES_S3_ENDPOINT "$TG_FILES_S3_ENDPOINT"
+  set_kv TG_FILES_S3_BUCKET "${TG_FILES_S3_BUCKET:-treegent}"
+  set_kv TG_FILES_S3_ACCESS_KEY "$TG_FILES_S3_ACCESS_KEY"
+  set_kv TG_FILES_S3_SECRET_KEY "$TG_FILES_S3_SECRET_KEY"
+else
+  # S3 disabled in config -> make sure no stale keys survive in .env
+  for k in TG_FILES_S3_ENDPOINT TG_FILES_S3_BUCKET TG_FILES_S3_ACCESS_KEY TG_FILES_S3_SECRET_KEY; do
+    sed -i "s|^$k=.*|$k=|" "$TOKEN_FILE"
+  done
+fi
 [ -n "${TG_FILES_S3_BUCKET:-}" ] && set_kv TG_FILES_S3_BUCKET "$TG_FILES_S3_BUCKET"
 [ -n "${TG_FILES_S3_ACCESS_KEY:-}" ] && set_kv TG_FILES_S3_ACCESS_KEY "$TG_FILES_S3_ACCESS_KEY"
 [ -n "${TG_FILES_S3_SECRET_KEY:-}" ] && set_kv TG_FILES_S3_SECRET_KEY "$TG_FILES_S3_SECRET_KEY"
