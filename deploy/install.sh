@@ -41,6 +41,7 @@ fi
 
 # 4) env dir (root-owned) + secrets master key if missing
 install -d -m 750 -o "$SYSUSER" -g "$SYSUSER" "$ENV_DIR"
+install -d -m 755 -o "$SYSUSER" -g "$SYSUSER" /var/log/treegent
 if [ -z "$(grep '^TG_SECRETS_MASTER_KEY=..' "$ENV_FILE")" ]; then
   KEY=$(uv run --with cryptography python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
   sed -i "s|^TG_SECRETS_MASTER_KEY=.*|TG_SECRETS_MASTER_KEY=$KEY|" "$ENV_FILE"

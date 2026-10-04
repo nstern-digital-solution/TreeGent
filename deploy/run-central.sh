@@ -1,68 +1,108 @@
 #!/usr/bin/env bash
-# Runs all central-host services under one systemd unit (supervision by
-# systemd; simple process per service, loopback only).
-set -euo pipefail
+# Runs all central-host services under one systemd unit.
+# Supervisor: fail-soft + auto-restart with backoff; per-service logs in
+# /var/log/treegent/<name>.log (service stdout no longer vanishes).
+# NOTE: deliberately NO `set -e` — a supervisor must not die on a false
+# check (that bug shipped once; never again).
+set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
 VENV="$REPO/.venv/bin"
 
-pids=()
-cmds=()
-term() { for p in "${pids[@]:-}"; do kill "$p" 2>/dev/null || true; done; wait; }
+LOGDIR=/var/log/treegent
+mkdir -p "$LOGDIR" 2>/dev/null || LOGDIR=/tmp/treegent-logs
+mkdir -p "$LOGDIR"
+
+declare -A PID CMD LOG STARTS BACKOFF NEXT_RETRY LAST_START
+ORDER=()
+
+now() { date +%s; }
+
+spawn() { # spawn <name> — first call launches; later calls mark dead + schedule retry
+  local s="$1"
+  LOG[$s]="$LOGDIR/$s.log"
+  if [ -z "${NEXT_RETRY[$s]:-}" ]; then
+    STARTS[$s]=1; BACKOFF[$s]=5; NEXT_RETRY[$s]=0
+    _launch "$s"
+    return 0
+  fi
+  STARTS[$s]=$(( ${STARTS[$s]} + 1 ))
+  echo "[supervisor] $s died; restart #${STARTS[$s]} in ${BACKOFF[$s]}s (log: ${LOG[$s]})" >&2
+  NEXT_RETRY[$s]=$(( $(now) + ${BACKOFF[$s]} ))
+  BACKOFF[$s]=$(( ${BACKOFF[$s]} * 2 ))
+  [ "${BACKOFF[$s]}" -gt 60 ] && BACKOFF[$s]=60
+}
+
+_launch() { # start the process for service s now
+  local s="$1"
+  LAST_START[$s]=$(now)
+  eval "${CMD[$s]}" >>"${LOG[$s]}" 2>&1 &
+  PID[$s]=$!
+  echo "[supervisor] $s started pid ${PID[$s]} (log: ${LOG[$s]})" >&2
+}
+
+term() {
+  for s in "${ORDER[@]}"; do
+    [ -n "${PID[$s]:-}" ] && kill "${PID[$s]}" 2>/dev/null
+  done
+  wait 2>/dev/null
+  exit 0
+}
 trap term TERM INT
-FAILURES=0
 
-$VENV/uvicorn services.chat.app.main:app --host 127.0.0.1 --port 8000 &
-pids+=($!); cmds+=("chat")
-$VENV/uvicorn services.proxy.app.main:app --host 127.0.0.1 --port 8001 &
-pids+=($!); cmds+=("proxy")
-$VENV/uvicorn services.mail.app.__main__:app --host 127.0.0.1 --port 8002 &
-pids+=($!); cmds+=("mail")
-$VENV/uvicorn services.secrets.app.__main__:app --host 127.0.0.1 --port 8003 &
-pids+=($!); cmds+=("secrets")
-$VENV/uvicorn services.files.app.__main__:app --host 127.0.0.1 --port 8004 &
-pids+=($!); cmds+=("files")
-$VENV/uvicorn services.runtime.app.__main__:app --host 127.0.0.1 --port 8010 &
-pids+=($!); cmds+=("runtime")
+ORDER=(chat proxy mail secrets files runtime)
+CMD[chat]="$VENV/uvicorn services.chat.app.main:app --host 127.0.0.1 --port 8000"
+CMD[proxy]="$VENV/uvicorn services.proxy.app.main:app --host 127.0.0.1 --port 8001"
+CMD[mail]="$VENV/uvicorn services.mail.app.__main__:app --host 127.0.0.1 --port 8002"
+CMD[secrets]="$VENV/uvicorn services.secrets.app.__main__:app --host 127.0.0.1 --port 8003"
+CMD[files]="$VENV/uvicorn services.files.app.__main__:app --host 127.0.0.1 --port 8004"
+CMD[runtime]="$VENV/uvicorn services.runtime.app.__main__:app --host 127.0.0.1 --port 8010"
+for s in chat proxy mail secrets files runtime; do spawn "$s"; done
 
-cd "$REPO/services/web"
-METEOR_PORT=3000
-# Meteor: db name must be IN the URL (default /meteor otherwise); use the
-# same Mongo the services use, from the shared env file.
+# ---- web (Meteor) ----
 MU="${TG_WEB_MONGO_URL:-${TG_MONGO_URL:-mongodb://127.0.0.1:27017}}"
-BASE="${MU%%\?*}"          # everything before the first ?
-QUERY="${MU#*\?}"          # everything after (may equal MU if no ?)
+BASE="${MU%%\?*}"
+QUERY="${MU#*\?}"
 [ "$QUERY" = "$MU" ] && QUERY=""
-BASE="${BASE%/}"           # strip trailing slash (Atlas SRV strings have one)
+BASE="${BASE%/}"
 case "$BASE" in
-  *"/treegent") : ;;       # db name already present
+  *"/treegent") : ;;
   *) BASE="$BASE/treegent" ;;
 esac
 if [ -n "$QUERY" ]; then MU="$BASE?$QUERY"; else MU="$BASE"; fi
+
 METEOR_BIN="$(command -v meteor || true)"
 if [ -z "$METEOR_BIN" ] && [ -x "/home/treegent/.meteor/meteor" ]; then
   METEOR_BIN="/home/treegent/.meteor/meteor"
 fi
 if [ -n "$METEOR_BIN" ]; then
-  MONGO_URL="$MU" "$METEOR_BIN" --production --port "$METEOR_PORT" &
-  pids+=($!); cmds+=("web")
+  ORDER+=(web)
+  # cap node heap: the first build on a small box can otherwise pressure-kill neighbors
+  CMD[web]="env NODE_OPTIONS=--max-old-space-size=1536 MONGO_URL=$MU $METEOR_BIN --production --port 3000"
+  spawn web
 else
-  echo "meteor not found — web UI not started" >&2
+  echo "[supervisor] meteor not found — web UI not started" >&2
 fi
 
-# fail-SOFT: one service dying no longer kills the unit; systemd sees
-# the supervisor alive. Real deps (mongo) surface as /health failures.
+# ---- supervisor loop: detect deaths, retry with backoff, heal ----
 while :; do
-  for i in "${!pids[@]}"; do
-    if ! kill -0 "${pids[$i]}" 2>/dev/null; then
-      echo "[supervisor] process ${pids[$i]} (${cmds[$i]:-?}) exited" >&2
-      unset "pids[$i]"; unset "cmds[$i]"
-      FAILURES=$((FAILURES+1))
+  T=$(now)
+  for s in "${ORDER[@]}"; do
+    [ -z "${PID[$s]:-}" ] && continue
+    if kill -0 "${PID[$s]}" 2>/dev/null; then
+      # healthy for >5 min => this life counts as stable; reset the ladder
+      if [ $(( T - ${LAST_START[$s]} )) -gt 300 ]; then
+        BACKOFF[$s]=5; STARTS[$s]=1
+      fi
+      continue
+    fi
+    # dead: first observation marks it and schedules a retry
+    if [ "${NEXT_RETRY[$s]:-0}" -eq 0 ]; then
+      spawn "$s"
+    elif [ "${NEXT_RETRY[$s]}" -le "$T" ]; then
+      _launch "$s"
+      NEXT_RETRY[$s]=0
     fi
   done
-  if [ ${#pids[@]} -eq 0 ]; then
-    echo "[supervisor] all services exited" >&2
-    exit 1
-  fi
   sleep 5
 done
