@@ -8,10 +8,20 @@
 set -euo pipefail
 
 say()  { printf '\033[1;36m== %s\033[0m\n' "$*"; }
+confirm_secret() { # feedback for hidden input without exposing the value
+  if [ -z "$1" ]; then
+    echo "  -> left empty (skip / use default)" >&2
+  elif [[ "$1" =~ ^(mongodb(\+srv)?|https?)://[^@]*@(.*)$ ]]; then
+    echo "  -> OK: ${BASH_REMATCH[1]}://***@${BASH_REMATCH[3]:0:50}" >&2
+  else
+    echo "  -> OK: received ${#1} characters" >&2
+  fi
+}
 ask_secret_or_default() { # ask_secret_or_default VAR PROMPT DEFAULT (no echo; empty = default)
   local __v
   read -r -s -p "$2 [$3]: " __v </dev/tty || true
   printf '\n' >&2
+  confirm_secret "${__v:-$3}"
   printf -v "$1" '%s' "${__v:-$3}"
 }
 ask() { # ask VAR PROMPT DEFAULT
@@ -26,6 +36,7 @@ ask_secret() { # ask_secret VAR PROMPT (no default, no echo)
   local __v
   read -r -s -p "$2: " __v </dev/tty || true
   echo >&2
+  confirm_secret "$__v"
   printf -v "$1" '%s' "$__v"
 }
 
@@ -33,6 +44,8 @@ ask_secret() { # ask_secret VAR PROMPT (no default, no echo)
 
 say "TreeGent quickstart"
 say "multi-agent company — central host installer"
+say "press Enter everywhere for defaults — anything skipped now"
+say "can be added later by re-running this script"
 
 # ---------- questions ----------
 ask TG_DOMAIN "" "(no domain — plain http on :3000)"
@@ -54,6 +67,10 @@ fi
 TG_SERVICE_TOKEN="$(head -c32 /dev/urandom | base64 | tr -d '=+/' | head -c 40)"
 # NOTE: inference providers (multiple, any keys/URLs) are added at RUNTIME
 # in the web UI Models tab — stored encrypted, nothing needed at deploy.
+ask TG_EXTRAS "Configure optional extras now — S3 files / Resend mail? (Enter = skip both)" "skip"
+if [ "${TG_EXTRAS:-skip}" = "skip" ]; then
+  TG_FILES_S3_ENDPOINT=""
+else
 ask TG_FILES_S3_ENDPOINT "S3 endpoint" "(enter = skip files service)"
 [ "$TG_FILES_S3_ENDPOINT" = "" ] || ask TG_FILES_S3_BUCKET "S3 bucket" "treegent"
 if [ -n "${TG_FILES_S3_BUCKET:-}" ] && [ "$TG_FILES_S3_BUCKET" != "treegent" ] || [ -n "${TG_FILES_S3_ENDPOINT:-}" ] && [ "${TG_FILES_S3_ENDPOINT:-}" != "" ]; then
@@ -61,6 +78,7 @@ if [ -n "${TG_FILES_S3_BUCKET:-}" ] && [ "$TG_FILES_S3_BUCKET" != "treegent" ] |
   ask_secret TG_FILES_S3_SECRET_KEY "S3 secret key"
 fi
 ask_secret TG_RESEND_API_KEY "RESEND_API_KEY for outbound mail (enter = dev sink)"
+fi
 
 # ---------- install ----------
 say "installing base packages"
