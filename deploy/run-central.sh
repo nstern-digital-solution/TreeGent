@@ -51,12 +51,19 @@ term() {
 trap term TERM INT
 
 ORDER=(chat proxy mail secrets files runtime)
-CMD[chat]="$VENV/uvicorn services.chat.app.main:app --host 127.0.0.1 --port 8000"
-CMD[proxy]="$VENV/uvicorn services.proxy.app.main:app --host 127.0.0.1 --port 8001"
-CMD[mail]="$VENV/uvicorn services.mail.app.__main__:app --host 127.0.0.1 --port 8002"
-CMD[secrets]="$VENV/uvicorn services.secrets.app.__main__:app --host 127.0.0.1 --port 8003"
-CMD[files]="$VENV/uvicorn services.files.app.__main__:app --host 127.0.0.1 --port 8004"
-CMD[runtime]="$VENV/uvicorn services.runtime.app.__main__:app --host 127.0.0.1 --port 8010"
+# rehearsal mode shifts ports explicitly (TG_REHEARSAL=1) to avoid
+# colliding with a dev stack on the same box. NEVER build ports by string
+# concat — 18+8010 = 188010 > 65535 (shipped bug, caught by rehearsal).
+P_CHAT=8000; P_PROXY=8001; P_MAIL=8002; P_SEC=8003; P_FILES=8004; P_RT=8010; P_WEB=3000
+if [ "${TG_REHEARSAL:-0}" = "1" ]; then
+  P_CHAT=18000; P_PROXY=18001; P_MAIL=18002; P_SEC=18003; P_FILES=18004; P_RT=18010; P_WEB=13000
+fi
+CMD[chat]="$VENV/uvicorn services.chat.app.main:app --host 127.0.0.1 --port $P_CHAT"
+CMD[proxy]="$VENV/uvicorn services.proxy.app.main:app --host 127.0.0.1 --port $P_PROXY"
+CMD[mail]="$VENV/uvicorn services.mail.app.__main__:app --host 127.0.0.1 --port $P_MAIL"
+CMD[secrets]="$VENV/uvicorn services.secrets.app.__main__:app --host 127.0.0.1 --port $P_SEC"
+CMD[files]="$VENV/uvicorn services.files.app.__main__:app --host 127.0.0.1 --port $P_FILES"
+CMD[runtime]="$VENV/uvicorn services.runtime.app.__main__:app --host 127.0.0.1 --port $P_RT"
 for s in chat proxy mail secrets files runtime; do spawn "$s"; done
 
 # ---- web (Meteor) ----
@@ -80,7 +87,8 @@ NODE_BIN=""
 if [ -f "$WEB_BUNDLE/star.json" ]; then
   WANT_NODE="$(python3 -c "import json;print(json.load(open('$WEB_BUNDLE/star.json'))['nodeVersion'])" 2>/dev/null || true)"
 fi
-for CAND in /home/treegent/.meteor/packages/meteor-tool/*/mt-os.linux.x86_64/dev_bundle/bin/node; do
+for CAND in "$HOME"/.meteor/packages/meteor-tool/*/mt-os.linux.x86_64/dev_bundle/bin/node \
+           /home/treegent/.meteor/packages/meteor-tool/*/mt-os.linux.x86_64/dev_bundle/bin/node; do
   [ -x "$CAND" ] || continue
   CV="$("$CAND" --version 2>/dev/null || echo v0)"
   if [ -n "${WANT_NODE:-}" ] && [ "$CV" = "$WANT_NODE" ]; then NODE_BIN="$CAND"; break; fi
@@ -90,7 +98,7 @@ done
 ROOT_URL="${TG_PUBLIC_URL:-http://localhost:3000}"
 if [ -d "$WEB_BUNDLE" ] && [ -n "$NODE_BIN" ]; then
   ORDER+=(web)
-  CMD[web]="cd $WEB_BUNDLE && env MONGO_URL=$MU ROOT_URL=$ROOT_URL PORT=3000 NODE_OPTIONS=--max-old-space-size=1024 $NODE_BIN main.js"
+  CMD[web]="cd $WEB_BUNDLE && env MONGO_URL=$MU ROOT_URL=$ROOT_URL PORT=$P_WEB NODE_OPTIONS=--max-old-space-size=1024 $NODE_BIN main.js"
   spawn web
 else
   METEOR_BIN="$(command -v meteor || true)"
