@@ -108,8 +108,14 @@ fi
 echo "[4/5] supervisor auto-restart"
 VICTIM_PID="$(ss -tlnp 2>/dev/null | grep -E ':18010 ' | grep -oP 'pid=\K[0-9]+' | head -1)"
 if [ -n "$VICTIM_PID" ]; then
-  kill "$VICTIM_PID"; sleep 12
-  if ss -l 2>/dev/null | grep -q ':18010 '; then ok "runtime relaunched after kill"; else bad "runtime NOT relaunched"; fi
+  kill "$VICTIM_PID"
+  # backoff can schedule the relaunch up to 60s out — poll, don't sleep blind
+  RELAUNCHED=0
+  for i in $(seq 1 30); do
+    if ss -l 2>/dev/null | grep -q ':18010 '; then RELAUNCHED=1; break; fi
+    sleep 3
+  done
+  if [ $RELAUNCHED -eq 1 ]; then ok "runtime relaunched after kill"; else bad "runtime NOT relaunched within 90s"; fi
 else
   bad "could not find runtime pid for kill test"
 fi
