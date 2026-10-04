@@ -10,6 +10,15 @@ export function Admin() {
   const [kind, setKind] = useState('human');
   const [parent, setParent] = useState('');
   const [msg, setMsg] = useState('');
+  const [issued, setIssued] = useState(null); // {agentId, key} shown ONCE
+
+  const issueKey = (agentId) => {
+    setMsg(''); setIssued(null);
+    Meteor.call('tg.issueAgentKey', agentId, (err, key) => {
+      if (err) return setMsg(err.message);
+      setIssued({ agentId, key });
+    });
+  };
 
   const { actors, users } = useTracker(() => {
     Meteor.subscribe('actors');
@@ -57,6 +66,25 @@ export function Admin() {
           const a = actorOf(u);
           return <li key={u._id}>{u.username} — {a ? `${a.display_name} (${a.kind})` : 'no actor'}</li>;
         })}
+      </ul>
+
+      <h3>Agents</h3>
+      <p className="muted">Issue a key when the agent first needs to authenticate
+        (agent host config). The key is shown once and never again — store it
+        where the agent runs.</p>
+      <ul>
+        {actors.filter((a) => a.kind === 'agent').map((a) => (
+          <li key={a._id} className="agent-key-row">
+            <span>{a.display_name} ({a.username})</span>
+            <button onClick={() => issueKey(a._id)}>issue key</button>
+            {issued && issued.agentId === a._id && (
+              <code className="key-reveal">{issued.key}</code>
+            )}
+          </li>
+        ))}
+        {actors.filter((a) => a.kind === 'agent').length === 0 && (
+          <li className="muted">no agents yet — create one above (kind: agent)</li>
+        )}
       </ul>
     </div>
   );

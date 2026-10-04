@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from .. import db, idgen
 
@@ -49,3 +49,30 @@ async def agent_inbox_delivered(body: dict, _: None = Depends(require_service)):
         {"recipient_id": body.get("agent_id"), "delivered_at": None},
         {"$set": {"delivered_at": idgen.now()}})
     return {"ok": True}
+
+
+@router.post("/agents/{agent_id}/keys")
+async def issue_agent_key(agent_id: str, actor: dict = Depends(require_service)):
+    """Issue a fresh agent key (R45). Central tier only (the web calls this
+    for an admin); agent tier can never mint keys for anyone. Returns the
+    key ONCE — it is never retrievable again."""
+    if actor.get("kind") not in ("human", None):
+        raise HTTPException(403, "humans only")
+    a = await db.actors.find_one({"_id": agent_id})
+    if not a or a.get("kind") != "agent":
+        raise HTTPException(404, "no such agent actor")
+    import secrets
+    key = f"sk-agt-{secrets.token_urlsafe(24)}"
+    await db.agent_keys.insert_one({"_id": key, "agent_id": agent_id,
+                                    "created_at": idgen.now(), "revoked": False})
+    return {"key": key, "agent_id": agent_id}
+
+
+@router.delete("/agents/{agent_id}/keys")
+async def revoke_agent_keys(agent_id: str, actor: dict = Depends(require_service)):
+    if actor.get("kind") not in ("human", None):
+        raise HTTPException(403, "humans only")
+    r = await db.agent_keys.update_many(
+        {"agent_id": agent_id, "revoked": {"$ne": True}},
+        {"$set": {"revoked": True, "revoked_at": idgen.now()}})
+    return {"revoked": r.modified_count}

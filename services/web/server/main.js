@@ -203,6 +203,16 @@ Meteor.methods({
     return true;
   },
 
+  async 'tg.issueAgentKey'(agentId) {
+    check(agentId, String);
+    const caller = await Meteor.userAsync();
+    if (!caller || !caller.isAdmin) throw new Meteor.Error('forbidden', 'admin only');
+    const me = await myActor(caller);
+    if (!me) throw new Meteor.Error('no-actor', 'caller has no actor record');
+    const r = await api(`/internal/agents/${agentId}/keys`, 'POST', me._id);
+    return r.key;   // shown ONCE in the UI, never stored client-side
+  },
+
   async 'tg.setParent'(actorId, parentId) {
     check(actorId, String);
     check(parentId === undefined ? null : parentId, Match.OneOf(String, null));
