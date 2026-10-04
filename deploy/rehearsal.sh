@@ -117,7 +117,7 @@ if [ -d "$BUNDLE" ]; then
       *result*) ok "DDP method responds (bootstrap not hung)" ;;
       *) bad "DDP tg.userCount hung/failed: $(echo "$RESP" | head -c 120)" ;;
     esac
-    kill "$WEB_PID" 2>/dev/null
+    # NOTE: bundle stays up — the caddy websocket test (4b) proxies to it
   fi
 else
   bad "bundle dir missing"
@@ -159,6 +159,7 @@ if [ -x "$CADDY_BIN" ]; then
   [ "$CODE" = "101" ] && ok "sockjs websocket upgrade through caddy (101)" \
                       || bad "ws upgrade via caddy: HTTP $CODE (expected 101)"
   kill "$CADDY_PID" 2>/dev/null
+  [ -n "${WEB_PID:-}" ] && kill "$WEB_PID" 2>/dev/null
 else
   echo "  SKIP: no caddy binary (websocket-forwarding untested this run)"
 fi
