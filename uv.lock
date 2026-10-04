@@ -1210,6 +1210,7 @@ version = "0.1.0"
 source = { virtual = "services/files" }
 dependencies = [
     { name = "aioboto3" },
+    { name = "dnspython" },
     { name = "fastapi" },
     { name = "motor" },
     { name = "pydantic-settings" },
@@ -1221,6 +1222,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aioboto3", specifier = ">=12.0" },
+    { name = "dnspython", specifier = ">=2.6" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "motor", specifier = ">=3.5" },
     { name = "pydantic-settings", specifier = ">=2.4" },
@@ -1234,6 +1236,7 @@ name = "treegent-mail"
 version = "0.1.0"
 source = { virtual = "services/mail" }
 dependencies = [
+    { name = "dnspython" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "motor" },
@@ -1244,6 +1247,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "dnspython", specifier = ">=2.6" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "motor", specifier = ">=3.5" },
@@ -1279,6 +1283,7 @@ version = "0.1.0"
 source = { virtual = "services/secrets" }
 dependencies = [
     { name = "cryptography" },
+    { name = "dnspython" },
     { name = "fastapi" },
     { name = "motor" },
     { name = "pydantic-settings" },
@@ -1289,6 +1294,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=42.0" },
+    { name = "dnspython", specifier = ">=2.6" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "motor", specifier = ">=3.5" },
     { name = "pydantic-settings", specifier = ">=2.4" },

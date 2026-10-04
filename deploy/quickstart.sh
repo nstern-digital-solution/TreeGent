@@ -35,10 +35,14 @@ if [ -n "${TG_DOMAIN:-}" ]; then
 else
   SCHEME="http"; PROXY="none"
 fi
-ask TG_MONGO_MODE "MongoDB" " bundled"
+ask TG_MONGO_MODE "MongoDB: 'atlas' (paste SRV URL), 'external', or Enter for bundled local" "bundled"
 TG_MONGO_MODE="$(echo "$TG_MONGO_MODE" | tr -d ' ')"
 case "$TG_MONGO_MODE" in
   bundled|"") TG_MONGO_MODE=bundled ;;
+  atlas)
+    ask_secret TG_MONGO_URL "Paste your Atlas connection string (mongodb+srv://...)"
+    [ -n "${TG_MONGO_URL:-}" ] || { echo "atlas selected but no URL given"; exit 1; }
+    ;;
   external) ask TG_MONGO_URL "Mongo URL" "mongodb://host:27017/?replicaSet=rs0" ;;
   *) TG_MONGO_MODE=bundled ;;
 esac
