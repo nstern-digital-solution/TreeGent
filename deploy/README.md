@@ -28,7 +28,23 @@ deploy/
 - Provider API key for inference (e.g. an OpenRouter key) — set
   `TG_PROXY_KEY_<PROVIDER>`.
 
-## Install (central host)
+## Quickstart (the way anyone deploys)
+
+One command on a fresh Linux box (root/sudo), answer the questions:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nstern-digital-solution/TreeGent/main/deploy/quickstart.sh | bash
+```
+
+It asks for: domain (optional — TLS via Caddy if given), Mongo
+(bundled single-node by default, or your external URL), service token
+(generates one if you just press enter), inference provider key
+(optional now, add later in the web UI), S3 details (optional), Resend
+mail key (optional — dev sink until set). Then it installs everything
+and starts it. Open the printed URL, create the first admin account,
+build your org in the web UI.
+
+## Manual install (alternative)
 
 ```bash
 git clone https://github.com/nstern-digital-solution/TreeGent.git
