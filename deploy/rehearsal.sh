@@ -111,8 +111,10 @@ if [ -d "$BUNDLE" ]; then
     ddp '["{\"msg\":\"connect\",\"version\":\"1\",\"support\":[\"1\"]}"]' xhr_send >/dev/null
     ddp '["{\"msg\":\"method\",\"method\":\"tg.userCount\",\"id\":\"m1\",\"params\":[]}"]' xhr_send >/dev/null
     RESP="$(ddp '' xhr | head -c 400)"
+    # NOTE: sockjs wraps frames in JSON, so the wire bytes are \"result\"
+    # (backslash-escaped) — match the bare word, not the quoted form.
     case "$RESP" in
-      *'"result"'*) ok "DDP method responds (bootstrap not hung)" ;;
+      *result*) ok "DDP method responds (bootstrap not hung)" ;;
       *) bad "DDP tg.userCount hung/failed: $(echo "$RESP" | head -c 120)" ;;
     esac
     kill "$WEB_PID" 2>/dev/null
