@@ -8,7 +8,13 @@
 set -euo pipefail
 
 say()  { printf '\033[1;36m== %s\033[0m\n' "$*"; }
-ask()  { # ask VAR PROMPT DEFAULT
+ask_secret_or_default() { # ask_secret_or_default VAR PROMPT DEFAULT (no echo; empty = default)
+  local __v
+  read -r -s -p "$2 [$3]: " __v >&2
+  printf '\n' >&2
+  printf -v "$1" '%s' "${__v:-$3}"
+}
+ask() { # ask VAR PROMPT DEFAULT
   local __v
   if [ -n "${BASH_VERSION:-}" ]; then
     read -r -p "$2 [$3]: " __v </dev/tty || true
@@ -35,17 +41,15 @@ if [ -n "${TG_DOMAIN:-}" ]; then
 else
   SCHEME="http"; PROXY="none"
 fi
-ask TG_MONGO_MODE "MongoDB: 'atlas' (paste SRV URL), 'external', or Enter for bundled local" "bundled"
-TG_MONGO_MODE="$(echo "$TG_MONGO_MODE" | tr -d ' ')"
-case "$TG_MONGO_MODE" in
-  bundled|"") TG_MONGO_MODE=bundled ;;
-  atlas)
-    ask_secret TG_MONGO_URL "Paste your Atlas connection string (mongodb+srv://...)"
-    [ -n "${TG_MONGO_URL:-}" ] || { echo "atlas selected but no URL given"; exit 1; }
-    ;;
-  external) ask TG_MONGO_URL "Mongo URL" "mongodb://host:27017/?replicaSet=rs0" ;;
-  *) TG_MONGO_MODE=bundled ;;
-esac
+# Mongo: Enter = bundled local single-node replica set, or paste ANY
+# connection string (Atlas SRV, self-hosted, ...) to bring your own.
+ask_secret_or_default TG_MONGO_URL "Mongo: Enter = bundled local, or paste connection string (mongodb:// or mongodb+srv://)" ""
+if [ -z "${TG_MONGO_URL:-}" ]; then
+  TG_MONGO_MODE=bundled
+else
+  TG_MONGO_MODE=external
+fi
+
 # internal token: generated silently, never asked (implementation detail)
 TG_SERVICE_TOKEN="$(head -c32 /dev/urandom | base64 | tr -d '=+/' | head -c 40)"
 # NOTE: inference providers (multiple, any keys/URLs) are added at RUNTIME
