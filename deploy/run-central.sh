@@ -78,7 +78,7 @@ fi
 if [ -n "$METEOR_BIN" ]; then
   ORDER+=(web)
   # cap node heap: the first build on a small box can otherwise pressure-kill neighbors
-  CMD[web]="env NODE_OPTIONS=--max-old-space-size=1536 MONGO_URL=$MU $METEOR_BIN --production --port 3000"
+  CMD[web]="cd $REPO/services/web && env NODE_OPTIONS=--max-old-space-size=1536 MONGO_URL=$MU $METEOR_BIN --production --port 3000"
   spawn web
 else
   echo "[supervisor] meteor not found — web UI not started" >&2

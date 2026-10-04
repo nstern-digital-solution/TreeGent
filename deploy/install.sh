@@ -11,6 +11,8 @@ SYSUSER="treegent"
 ENV_DIR="/etc/treegent"
 
 [ -f "$ENV_FILE" ] || { echo "ERROR: $ENV_FILE missing (cp deploy/env.example .env)"; exit 1; }
+# strip inline comments: systemd EnvironmentFile + pydantic keep them as value bytes
+sed -i -E 's/[[:space:]]+#.*$//' "$ENV_FILE"
 
 # 1) system user + uv
 id -u "$SYSUSER" >/dev/null 2>&1 || useradd -r -m -s /usr/sbin/nologin "$SYSUSER"
