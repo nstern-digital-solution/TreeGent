@@ -11,7 +11,8 @@ class Settings(BaseSettings):
     db_name: str = "treegent"
     bind_host: str = "127.0.0.1"
     port: int = 8004
-    service_token: str = "dev-service-token"
+    service_token: str = Field(default="dev-service-token",
+                            validation_alias=AliasChoices("TG_FILES_SERVICE_TOKEN", "TG_SERVICE_TOKEN"))
 
     # S3 host is USER-PROVIDED (R41): endpoint/bucket/keys from env, like Mongo.
     # endpoint scheme normalized: bare host gets https:// (Hetzner/AWS style)

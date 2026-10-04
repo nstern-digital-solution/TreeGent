@@ -27,7 +27,8 @@ class Settings(BaseSettings):
     db_name: str = "treegent"
     bind_host: str = "127.0.0.1"
     port: int = 8002
-    service_token: str = "dev-service-token"
+    service_token: str = Field(default="dev-service-token",
+                            validation_alias=AliasChoices("TG_MAIL_SERVICE_TOKEN", "TG_SERVICE_TOKEN"))
     chat_url: str = "http://127.0.0.1:8000"
     mail_domain: str = "treegent.local"  # dev default; real = deployment data
 

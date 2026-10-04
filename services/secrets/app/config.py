@@ -11,7 +11,8 @@ class Settings(BaseSettings):
     db_name: str = "treegent"
     bind_host: str = "127.0.0.1"
     port: int = 8003
-    service_token: str = "dev-service-token"
+    service_token: str = Field(default="dev-service-token",
+                            validation_alias=AliasChoices("TG_SECRETS_SERVICE_TOKEN", "TG_SERVICE_TOKEN"))
     # master key file for value encryption (instance data, never in Mongo/repo)
     key_file: str = os.path.expanduser("~/.treegent/secrets.key")
 
