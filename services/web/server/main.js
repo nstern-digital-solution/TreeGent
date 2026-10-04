@@ -15,6 +15,24 @@ const MAIL_URL = process.env.TG_MAIL_URL || (Meteor.settings && Meteor.settings.
 
 // --- helpers (Meteor 3: async collection access on the server) -----------
 
+// Self-heal: if users exist but NONE is admin (partial bootstrap from a
+// broken deploy era), the OLDEST user becomes admin on next login screen
+// load. First user is admin by definition.
+async function ensureAtLeastOneAdmin() {
+  try {
+    const admins = await Meteor.users.find({ isAdmin: true }).countAsync();
+    if (admins > 0) return;
+    const first = await Meteor.users.findOneAsync({}, { sort: { createdAt: 1 } });
+    if (first) {
+      await Meteor.users.updateAsync(first._id, { $set: { isAdmin: true } });
+      console.log('[self-heal] no admin found — promoted first user:', first.username);
+    }
+  } catch (e) {
+    console.error('[self-heal] failed:', e.message);
+  }
+}
+Meteor.startup(() => { ensureAtLeastOneAdmin(); });
+
 async function myActor(user) {
   if (!user) return null;
   return await Actors.findOneAsync({ username: user.username });
