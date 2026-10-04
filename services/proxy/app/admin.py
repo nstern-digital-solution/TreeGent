@@ -19,6 +19,7 @@ class ProviderIn(BaseModel):
     base_url: str
     key_env: str = ""
     enabled: bool = True
+    key: str = ""       # write-only: stored encrypted, never returned
 
 
 @router.get("/providers")
@@ -38,14 +39,15 @@ async def list_providers(_: None = Depends(require_service)):
 @router.put("/providers/{name}", status_code=201)
 async def upsert_provider(name: str, body: ProviderIn,
                           _: None = Depends(require_service)):
+    from .keyvault import encrypt_key
     if body.kind != "openai-compat":
         raise HTTPException(400, f"unsupported kind {body.kind!r} (only "
                                  "openai-compat for now)")
-    await db.providers.update_one(
-        {"_id": name},
-        {"$set": {"kind": body.kind, "base_url": body.base_url.rstrip("/"),
-                  "key_env": body.key_env, "enabled": body.enabled}},
-        upsert=True)
+    doc = {"kind": body.kind, "base_url": body.base_url.rstrip("/"),
+           "key_env": body.key_env, "enabled": body.enabled}
+    if body.key:
+        doc["key_enc"] = encrypt_key(body.key)
+    await db.providers.update_one({"_id": name}, {"$set": doc}, upsert=True)
     return {"id": name, "ready": name in await dispatcher.ready_providers()}
 
 

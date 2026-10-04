@@ -42,9 +42,10 @@ case "$TG_MONGO_MODE" in
   external) ask TG_MONGO_URL "Mongo URL" "mongodb://host:27017/?replicaSet=rs0" ;;
   *) TG_MONGO_MODE=bundled ;;
 esac
-ask_secret TG_SERVICE_TOKEN "Central service token (enter = generate)"
-[ -n "$TG_SERVICE_TOKEN" ] || TG_SERVICE_TOKEN="$(head -c32 /dev/urandom | base64 | tr -d '=+/' | head -c 40)"
-ask_secret TG_PROXY_KEY_MAIN "Inference provider API key (enter = skip, add later in the Models tab)"
+# internal token: generated silently, never asked (implementation detail)
+TG_SERVICE_TOKEN="$(head -c32 /dev/urandom | base64 | tr -d '=+/' | head -c 40)"
+# NOTE: inference providers (multiple, any keys/URLs) are added at RUNTIME
+# in the web UI Models tab — stored encrypted, nothing needed at deploy.
 ask TG_FILES_S3_ENDPOINT "S3 endpoint" "(enter = skip files service)"
 [ "$TG_FILES_S3_ENDPOINT" = "" ] || ask TG_FILES_S3_BUCKET "S3 bucket" "treegent"
 if [ -n "${TG_FILES_S3_BUCKET:-}" ] && [ "$TG_FILES_S3_BUCKET" != "treegent" ] || [ -n "${TG_FILES_S3_ENDPOINT:-}" ] && [ "${TG_FILES_S3_ENDPOINT:-}" != "" ]; then
@@ -75,7 +76,6 @@ if [ ! -f "$TOKEN_FILE" ]; then
 fi
 set_kv() { sed -i "s|^$1=.*|$1=$2|" "$TOKEN_FILE"; }
 set_kv TG_SERVICE_TOKEN "$TG_SERVICE_TOKEN"
-set_kv TG_PROXY_KEY_MAIN "$TG_PROXY_KEY_MAIN"
 [ -n "${TG_MONGO_URL:-}" ] && set_kv TG_MONGO_URL "$TG_MONGO_URL"
 [ -n "${TG_FILES_S3_ENDPOINT:-}" ] && [ "$TG_FILES_S3_ENDPOINT" != "" ] && set_kv TG_FILES_S3_ENDPOINT "$TG_FILES_S3_ENDPOINT"
 [ -n "${TG_FILES_S3_BUCKET:-}" ] && set_kv TG_FILES_S3_BUCKET "$TG_FILES_S3_BUCKET"

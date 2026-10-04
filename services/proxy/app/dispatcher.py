@@ -28,8 +28,15 @@ def now():
 # ---------------- provider plumbing ----------------
 
 def provider_key(provider_doc: dict) -> str:
-    """Resolve a provider's API key: TG_PROXY_KEY_<NAME> env var first, then
-    the env var named by its key_env field (env or runtime env file)."""
+    """Resolve a provider's API key. Priority: encrypted key stored on the
+    provider row (set via admin UI — write-only, never returned), then
+    TG_PROXY_KEY_<NAME> env var, then the env var named by key_env."""
+    enc = provider_doc.get("key_enc")
+    if enc:
+        from .keyvault import decrypt_key
+        k = decrypt_key(enc)
+        if k:
+            return k
     name = (provider_doc.get("_id") or "").upper().replace("-", "_")
     return env_fallback(f"TG_PROXY_KEY_{name}") or env_fallback(
         provider_doc.get("key_env", ""))

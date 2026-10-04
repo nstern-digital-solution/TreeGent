@@ -12,7 +12,7 @@ function ProvidersTab() {
   }, []);
   // readiness is computed on the proxy (env access) — pull via admin API
   const [readyById, setReadyById] = useState({});
-  const [form, setForm] = useState({ id: '', base_url: 'https://', key_env: '', kind: 'openai-compat' });
+  const [form, setForm] = useState({ id: '', base_url: 'https://', key_env: '', kind: 'openai-compat', key: '' });
   const [msg, setMsg] = useState(null);
   const [err, setErr] = useState(null);
 
@@ -65,16 +65,18 @@ function ProvidersTab() {
       <h4>Add / update provider</h4>
       <form onSubmit={(e) => { e.preventDefault(); run(async () => {
         await call(`/admin/providers/${encodeURIComponent(form.id)}`, 'PUT', {
-          kind: form.kind, base_url: form.base_url, key_env: form.key_env, enabled: true,
+          kind: form.kind, base_url: form.base_url, key_env: form.key_env, enabled: true, key: form.key || undefined,
         });
-        setForm({ id: '', base_url: 'https://', key_env: '', kind: 'openai-compat' });
+        setForm({ id: '', base_url: 'https://', key_env: '', kind: 'openai-compat', key: '' });
         return `Provider ${form.id} saved. Run "Refresh catalog" to pull its models.`;
       }); }} className="provider-form">
         <input placeholder="name (lowercase id)" value={form.id}
                onChange={(e) => setForm({ ...form, id: e.target.value })} />
         <input placeholder="https://api.example.com/v1" value={form.base_url}
                onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
-        <input placeholder="API key env var name (e.g. MYPROVIDER_API_KEY)" value={form.key_env}
+        <input placeholder="API key (stored encrypted — leave blank to keep)" type="password" value={form.key}
+               onChange={(e) => setForm({ ...form, key: e.target.value })} />
+        <input placeholder="or env var name (optional)" value={form.key_env}
                onChange={(e) => setForm({ ...form, key_env: e.target.value })} />
         <button className="btn" type="submit">Save provider</button>
         <p className="muted small">Keys are never stored in TreeGent — only the env-var NAME. The proxy reads the value from its environment at call time.</p>

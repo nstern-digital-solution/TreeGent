@@ -36,6 +36,14 @@ if [ -z "$(grep '^TG_SECRETS_MASTER_KEY=..' "$ENV_FILE")" ]; then
   sed -i "s|^TG_SECRETS_MASTER_KEY=.*|TG_SECRETS_MASTER_KEY=$KEY|" "$ENV_FILE"
   echo "generated TG_SECRETS_MASTER_KEY (back this up — losing it loses all secret values)"
 fi
+# proxy key vault keyfile (generate once)
+KEYS_KEY="$ENV_DIR/keys.key"
+if [ ! -f "$KEYS_KEY" ]; then
+  uv run --with cryptography python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" > "$KEYS_KEY"
+  chmod 600 "$KEYS_KEY"; chown "$SYSUSER:$SYSUSER" "$KEYS_KEY"
+  echo "generated $KEYS_KEY (back this up)"
+fi
+grep -q '^TG_PROXY_KEYFILE=' "$ENV_FILE" && sed -i "s|^TG_PROXY_KEYFILE=.*|TG_PROXY_KEYFILE=$KEYS_KEY|" "$ENV_FILE" || echo "TG_PROXY_KEYFILE=$KEYS_KEY" >> "$ENV_FILE"
 install -m 640 -o "$SYSUSER" -g "$SYSUSER" "$ENV_FILE" "$ENV_DIR/env"
 
 # 5) runtime user for exec on agent hosts (R46)
