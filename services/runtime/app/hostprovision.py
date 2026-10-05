@@ -91,22 +91,28 @@ mkdir -p /opt/TreeGent /var/log/treegent
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update -qq >/dev/null 2>&1 || true
-  apt-get install -y -qq python3-venv python3-pip git >/dev/null 2>&1 \
+  apt-get install -y -qq python3-venv python3-pip git curl >/dev/null 2>&1 \
     || echo "[provision] WARN: apt install failed — trying anyway"
 fi
 
-# 3) repo + venv
+# 3) repo + deps via uv (same flow as the central box; there is no
+#    requirements.txt — the workspace installs from pyproject.toml/uv.lock)
 if [ ! -d /opt/TreeGent/.git ]; then
   git clone -q https://github.com/nstern-digital-solution/TreeGent.git /opt/TreeGent
 else
-  git -C /opt/TreeGent pull -q || true
+  git -c safe.directory=/opt/TreeGent -C /opt/TreeGent pull -q || true
 fi
 chown -R treegent:treegent /opt/TreeGent /var/log/treegent
 cd /opt/TreeGent
-rm -rf .venv   # partial venv from a failed run breaks recreation
-python3 -m venv .venv
-.venv/bin/pip install -q -U pip >/dev/null 2>&1 || true
-.venv/bin/pip install -q -r requirements.txt
+rm -rf .venv   # partial venv from earlier attempts would linger otherwise
+if ! command -v uv >/dev/null 2>&1; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
+  export PATH="$HOME/.local/bin:$PATH"
+  command -v uv >/dev/null 2>&1 \
+    && install -m 755 "$(command -v uv)" /usr/local/bin/uv || true
+fi
+uv sync -q
+chown -R treegent:treegent /opt/TreeGent
 
 # 4) runtime-only env file (NEVER the service token; the runtime
 #    authenticates as agents with agent keys, not as the central web)
@@ -188,7 +194,7 @@ def _now():
 CHECK_SCRIPT = """set -uo pipefail
 SVC=$(systemctl is-active treegent-agent.service 2>/dev/null || echo unknown)
 if [ -d /opt/TreeGent/.git ]; then
-  VER=$(git -C /opt/TreeGent rev-parse HEAD 2>/dev/null || echo none)
+  VER=$(git -c safe.directory=/opt/TreeGent -C /opt/TreeGent rev-parse HEAD 2>/dev/null || echo none)
 else
   VER=none
 fi
@@ -206,8 +212,13 @@ def _central_commit(full: bool = False) -> str:
         os.path.dirname(here))))   # services/runtime/app/x.py -> repo root
     try:
         out = subprocess.run(
-            ["git", "-C", repo, "rev-parse", ("HEAD" if full else "--short", "HEAD")[0] if False else "HEAD"],
+            ["git", "-C", repo, "rev-parse", "HEAD"],
             capture_output=True, timeout=10)
+        if out.returncode != 0:  # e.g. dubious ownership when run as root
+            out = subprocess.run(
+                ["git", "-c", f"safe.directory={repo}", "-C", repo,
+                 "rev-parse", "HEAD"],
+                capture_output=True, timeout=10)
         sha = out.stdout.decode().strip()
         return sha if (out.returncode == 0 and sha) else "?"
     except Exception:
@@ -253,9 +264,12 @@ def update_script(target_sha: str) -> str:
     """Make the host run the central box's current commit."""
     return f"""set -euo pipefail
 cd /opt/TreeGent
-git fetch -q origin
-git checkout -q {target_sha} 2>/dev/null || git reset -q --hard {target_sha}
-.venv/bin/pip install -q -r requirements.txt
+GIT="git -c safe.directory=/opt/TreeGent"
+$GIT fetch -q origin
+$GIT checkout -q {target_sha} 2>/dev/null || $GIT reset -q --hard {target_sha}
+UV="$(command -v uv || echo /usr/local/bin/uv)"
+"$UV" sync -q
+chown -R treegent:treegent /opt/TreeGent/.venv
 systemctl restart treegent-agent.service
 echo "updated to {target_sha[:7]}"
 """
