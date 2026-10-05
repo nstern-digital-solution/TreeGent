@@ -231,13 +231,15 @@ Meteor.methods({
 
   // ---- agent hosts (R53) ----
   async 'tg.setAgentHost'(agentId, hostId) {
-    if (!this.userId) throw new Meteor.Error('403', 'login required');
-    if (!Roles.userIsInRole(this.userId, 'admin')) throw new Meteor.Error('403', 'admin only');
     check(agentId, String);
+    const caller = await Meteor.userAsync();
+    if (!caller || !caller.isAdmin) throw new Meteor.Error('forbidden', 'admin only');
     const target = hostId === '' ? null : hostId;  // '' = central option -> null
+    const actor = await myActor(caller);   // central tier needs X-Actor-Id (R45)
     const res = await fetch(`${CHAT_URL}/internal/agents/${agentId}/host`, {
       method: 'PATCH',
-      headers: { 'X-Service-Token': process.env.TG_SERVICE_TOKEN || '', 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json',
+                 'X-Service-Token': SERVICE_TOKEN, 'X-Actor-Id': actor._id },
       body: JSON.stringify({ host_id: target }),
     });
     if (!res.ok) throw new Meteor.Error(res.status, await res.text());
