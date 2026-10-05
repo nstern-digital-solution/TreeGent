@@ -349,7 +349,7 @@ async def supervise(state_registry: dict | None = None) -> None:
         async for a in db.actors.find({"kind": "agent"}):
             if a["_id"] in agents:
                 continue
-            a_host = a.get("host_id")
+            a_host = a.get("host_id") or None  # '' == unassigned
             if own and a_host != own:
                 continue
             if not own and a_host:

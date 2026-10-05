@@ -85,6 +85,15 @@ export function Admin() {
         {actors.filter((a) => a.kind === 'agent').map((a) => (
           <li key={a._id} className="agent-key-row">
             <span>{a.display_name} ({a.username})</span>
+            <select
+              value={a.host_id || ''}
+              onChange={(e) => Meteor.callAsync('tg.setAgentHost', a._id, e.target.value)
+                .then(() => setMsg(`host set for ${a.display_name}`))
+                .catch((e2) => setMsg(`failed: ${e2.reason || e2.message}`))}
+            >
+              <option value="">central</option>
+              {hosts.map((h) => <option key={h.id} value={h.id}>{h.name} ({h.status})</option>)}
+            </select>
             <button onClick={() => issueKey(a._id)}>issue key</button>
             {issued && issued.agentId === a._id && (
               <code className="key-reveal">{issued.key}</code>

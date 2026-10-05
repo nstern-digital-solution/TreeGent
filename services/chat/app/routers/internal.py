@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime
+from fastapi import APIRouter, Body, Depends, Header, HTTPException
 
 from .. import db, idgen
 
@@ -66,6 +67,25 @@ async def issue_agent_key(agent_id: str, actor: dict = Depends(require_service))
     await db.agent_keys.insert_one({"_id": key, "agent_id": agent_id,
                                     "created_at": idgen.now(), "revoked": False})
     return {"key": key, "agent_id": agent_id}
+
+
+@router.patch("/agents/{agent_id}/host")
+async def set_agent_host(agent_id: str, body: dict = Body(...),
+                         _: None = Depends(require_service)):
+    """R55: move an agent between hosts (null = central)."""
+    host_id = body.get("host_id")  # explicit null must survive (back to central)
+    if host_id is not None:
+        hosts = db.db.agent_hosts if hasattr(db, "db") else db.agent_hosts
+        exists = await hosts.find_one({"_id": host_id}, {"_id": 1})
+        if not exists:
+            raise HTTPException(404, "no such host")
+    r = await db.actors.update_one(
+        {"_id": agent_id, "kind": "agent"},
+        {"$set": {"host_id": host_id,
+                  "updated_at": datetime.utcnow().isoformat() + "Z"}})
+    if r.modified_count == 0 and r.matched_count == 0:
+        raise HTTPException(404, "no such agent")
+    return {"ok": True, "agent_id": agent_id, "host_id": host_id}
 
 
 @router.delete("/agents/{agent_id}/keys")

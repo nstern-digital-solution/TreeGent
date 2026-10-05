@@ -120,3 +120,4 @@ are you?" — correct; v1 used ONE central keypair for all hosts.
   revocation is per host; a leaked key exposes exactly one machine
 - verified: 2 hosts → 2 distinct keys; DELETE removed only that keypair
 - **R54** — Host fleet observability + maintenance: `check` (SSH probe: service state, git commit, uptime, load → status active|stopped|unreachable + last_seen), `update` (git pull to central's commit + service restart), auto-health loop every 60s, central vs host version comparison in UI.
+- **R55** — Assigning/moving agents between hosts: chat `PATCH /internal/agents/{id}/host` (host_id or null=central; 404 on unknown host, 401 without service token), web `tg.setAgentHost` (admin-only, normalizes ''->null), per-agent host dropdown in the Admin tab. Central runtime claims only `host_id=None`; a host runtime claims only matching `host_id`.

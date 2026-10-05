@@ -230,6 +230,20 @@ Meteor.methods({
   },
 
   // ---- agent hosts (R53) ----
+  async 'tg.setAgentHost'(agentId, hostId) {
+    if (!this.userId) throw new Meteor.Error('403', 'login required');
+    if (!Roles.userIsInRole(this.userId, 'admin')) throw new Meteor.Error('403', 'admin only');
+    check(agentId, String);
+    const target = hostId === '' ? null : hostId;  // '' = central option -> null
+    const res = await fetch(`${CHAT_URL}/internal/agents/${agentId}/host`, {
+      method: 'PATCH',
+      headers: { 'X-Service-Token': process.env.TG_SERVICE_TOKEN || '', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host_id: target }),
+    });
+    if (!res.ok) throw new Meteor.Error(res.status, await res.text());
+    return { ok: true };
+  },
+
   async 'tg.hosts.list'() {
     const r = await fetch(`${RUNTIME_URL}/internal/hosts`, {
       headers: { 'X-Service-Token': SERVICE_TOKEN } });
