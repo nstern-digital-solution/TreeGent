@@ -242,6 +242,20 @@ Meteor.methods({
     if (!r.ok) throw new Meteor.Error('hosts', `${r.status}`);
     return r.json();
   },
+  async 'tg.hosts.check'(hostId) {
+    check(hostId, String);
+    const r = await fetch(`${RUNTIME_URL}/internal/hosts/${hostId}/check`, {
+      method: 'POST', headers: { 'X-Service-Token': SERVICE_TOKEN } });
+    if (!r.ok) throw new Meteor.Error('hosts', `${r.status}`);
+    return r.json();
+  },
+  async 'tg.hosts.update'(hostId) {
+    check(hostId, String);
+    const r = await fetch(`${RUNTIME_URL}/internal/hosts/${hostId}/update`, {
+      method: 'POST', headers: { 'X-Service-Token': SERVICE_TOKEN } });
+    if (!r.ok) throw new Meteor.Error('hosts', `${r.status}`);
+    return r.json();
+  },
   async 'tg.hosts.remove'(hostId) {
     check(hostId, String);
     const r = await fetch(`${RUNTIME_URL}/internal/hosts/${hostId}`, {

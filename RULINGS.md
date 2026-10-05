@@ -119,3 +119,4 @@ are you?" — correct; v1 used ONE central keypair for all hosts.
   strip its authorized_keys line, DELETE the central keypair —
   revocation is per host; a leaked key exposes exactly one machine
 - verified: 2 hosts → 2 distinct keys; DELETE removed only that keypair
+- **R54** — Host fleet observability + maintenance: `check` (SSH probe: service state, git commit, uptime, load → status active|stopped|unreachable + last_seen), `update` (git pull to central's commit + service restart), auto-health loop every 60s, central vs host version comparison in UI.

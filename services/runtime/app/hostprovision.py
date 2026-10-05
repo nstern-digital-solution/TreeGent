@@ -181,3 +181,81 @@ async def provision_host(host_doc: dict) -> dict:
 def _now():
     from datetime import datetime, timezone
     return datetime.now(timezone.utc)
+
+
+# ---------------- healthcheck / version / update (R54) ----------------
+
+CHECK_SCRIPT = """set -uo pipefail
+SVC=$(systemctl is-active treegent-agent.service 2>/dev/null || echo unknown)
+if [ -d /opt/TreeGent/.git ]; then
+  VER=$(git -C /opt/TreeGent rev-parse HEAD 2>/dev/null || echo none)
+else
+  VER=none
+fi
+UPT=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)
+LOAD=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo 0)
+echo "svc=$SVC ver=$VER uptime=$UPT load=$LOAD"
+"""
+
+
+def _central_commit(full: bool = False) -> str:
+    """The central box's own repo commit — the reference version hosts
+    are compared against (update = make host match central)."""
+    here = os.path.abspath(__file__)
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(here))))   # services/runtime/app/x.py -> repo root
+    try:
+        out = subprocess.run(
+            ["git", "-C", repo, "rev-parse", ("HEAD" if full else "--short", "HEAD")[0] if False else "HEAD"],
+            capture_output=True, timeout=10)
+        sha = out.stdout.decode().strip()
+        return sha if (out.returncode == 0 and sha) else "?"
+    except Exception:
+        return "?"
+
+
+def _central_commit_short() -> str:
+    sha = _central_commit(full=True)
+    return sha[:7] if sha not in ("?", "") else "?"
+
+
+def check_host_sync(host_doc: dict) -> dict:
+    """SSH probe: service state, repo version, uptime, load. Updates the
+    host row (status active|stopped|unreachable, last_seen, version...)."""
+    hid = host_doc["_id"]
+    try:
+        r = ssh_run(hid, host_doc["address"], host_doc.get("port", 22),
+                    host_doc.get("ssh_user", "root"), CHECK_SCRIPT, timeout=30)
+    except Exception as e:  # noqa: BLE001
+        r = {"rc": -1, "stdout": "", "stderr": str(e)}
+    fields = {"svc": "unknown", "ver": "none", "uptime": "0", "load": "0"}
+    if r["rc"] == 0:
+        for kv in r["stdout"].strip().splitlines():
+            for part in kv.split():
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    if k in fields:
+                        fields[k] = v
+        status = "active" if fields["svc"] == "active" else "stopped"
+    else:
+        status = "unreachable"
+    ver = fields["ver"]
+    ver_short = ver[:7] if ver not in ("none", "") else "none"
+    update = {"status": status, "svc": fields["svc"],
+              "host_version": ver, "host_version_short": ver_short,
+              "uptime_s": int(fields["uptime"] or 0),
+              "load1": float(fields["load"] or 0),
+              "last_seen": _now() if status != "unreachable" else None}
+    return update
+
+
+def update_script(target_sha: str) -> str:
+    """Make the host run the central box's current commit."""
+    return f"""set -euo pipefail
+cd /opt/TreeGent
+git fetch -q origin
+git checkout -q {target_sha} 2>/dev/null || git reset -q --hard {target_sha}
+.venv/bin/pip install -q -r requirements.txt
+systemctl restart treegent-agent.service
+echo "updated to {target_sha[:7]}"
+"""

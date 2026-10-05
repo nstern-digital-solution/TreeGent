@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import FastAPI, Header, HTTPException
 
 from .config import client, db, settings
@@ -9,15 +11,34 @@ app = FastAPI(title="TreeGent runtime", version="0.1.0")
 AGENTS_STATE: dict = {}
 
 
+async def _host_health_loop() -> None:
+    """R54: probe all hosts every 60s so status stays truthful."""
+    from .hostprovision import check_host_sync
+    while True:
+        try:
+            async for h in db.agent_hosts.find():
+                try:
+                    update = await asyncio.to_thread(check_host_sync, h)
+                    await db.agent_hosts.update_one({"_id": h["_id"]}, {"$set": update})
+                except Exception as e:  # noqa: BLE001
+                    print(f"[host-health] host {h.get('_id')}: {e}")
+        except Exception as e:  # noqa: BLE001
+            print(f"[host-health] error: {e}")
+        await asyncio.sleep(60)
+
+
 @app.on_event("startup")
 async def _startup() -> None:
     import asyncio
     app.state.supervisor = asyncio.create_task(supervise(AGENTS_STATE))
+    app.state.host_health = asyncio.create_task(_host_health_loop())
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     app.state.supervisor.cancel()
+    if getattr(app.state, "host_health", None):
+        app.state.host_health.cancel()
 
 
 @app.get("/health")
@@ -94,7 +115,8 @@ async def list_hosts(x_service_token: str = Header(default="")):
                     "status": h.get("status", "unknown"),
                     "last_log": (h.get("last_log") or "")[-800:],
                     "provisioned_at": h.get("provisioned_at")})
-    return {"hosts": out}
+    from .hostprovision import _central_commit
+    return {"hosts": out, "central_version": _central_commit()[:7]}
 
 
 @app.post("/internal/hosts", status_code=201)
@@ -146,6 +168,46 @@ async def provision(host_id: str, x_service_token: str = Header(default="")):
     from .hostprovision import provision_host
     r = await provision_host(h)
     return r
+
+
+@app.post("/internal/hosts/{host_id}/check")
+async def check_host(host_id: str, x_service_token: str = Header(default="")):
+    """R54: probe one host (service state, version, uptime, load)."""
+    if x_service_token != settings.service_token:
+        raise HTTPException(401, "bad service token")
+    h = await db.agent_hosts.find_one({"_id": host_id})
+    if not h:
+        raise HTTPException(404, "no such host")
+    from .hostprovision import check_host_sync
+    update = await asyncio.to_thread(check_host_sync, h)
+    await db.agent_hosts.update_one({"_id": host_id}, {"$set": update})
+    return update
+
+
+@app.post("/internal/hosts/{host_id}/update")
+async def update_host(host_id: str, x_service_token: str = Header(default="")):
+    """R54: pull the host to the central box's current commit."""
+    if x_service_token != settings.service_token:
+        raise HTTPException(401, "bad service token")
+    h = await db.agent_hosts.find_one({"_id": host_id})
+    if not h:
+        raise HTTPException(404, "no such host")
+    from .hostprovision import _central_commit, update_script, ssh_run
+    sha = _central_commit()
+    if sha == "?":
+        raise HTTPException(503, "central repo version unavailable")
+    r = await asyncio.to_thread(
+        ssh_run, host_id, h["address"], h.get("port", 22),
+        h.get("ssh_user", "root"), update_script(sha), timeout=600)
+    ok = r["rc"] == 0
+    await db.agent_hosts.update_one(
+        {"_id": host_id},
+        {"$set": {"host_version": sha if ok else (h.get("host_version") or ""),
+                  "host_version_short": sha[:7] if ok else (h.get("host_version_short") or ""),
+                  "status": ("active" if ok else h.get("status")),
+                  "last_update": _now_iso() if ok else None,
+                  "last_update_log": (r["stdout"] + r["stderr"])[-1000:]}})
+    return {"ok": ok, "log": r["stdout"][-600:], "stderr": r["stderr"][-300:] if not ok else ""}
 
 
 def _now_iso():

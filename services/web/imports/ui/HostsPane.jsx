@@ -7,10 +7,19 @@ export function HostsPane() {
   const [form, setForm] = useState({ name: '', address: '', port: 22, ssh_user: 'root' });
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  const [centralVer, setCentralVer] = useState('');
+
+  // live refresh: status + versions, every 30s
+  useEffect(() => {
+    const tick = () => load();
+    const iv = setInterval(tick, 30000);
+    return () => clearInterval(iv);
+  }, []);
 
   const load = () => Meteor.callAsync('tg.hosts.list').then(async (r) => {
     const hs = r.hosts || [];
     setHosts(hs);
+    if (r.central_version) setCentralVer(r.central_version);
     // fetch each host's OWN public key for the one-liner
     for (const h of hs) {
       if (!pub[h.id]) {
@@ -22,6 +31,26 @@ export function HostsPane() {
     }
   });
   useEffect(() => { load(); }, []);
+
+  const checkNow = async (id) => {
+    setMsg('checking...');
+    try {
+      const r = await Meteor.callAsync('tg.hosts.check', id);
+      setMsg(`${r.status} — service ${r.svc}, version ${r.host_version_short}`);
+      load();
+    } catch (e) { setMsg(e.message); }
+  };
+
+  const updateNow = async (id) => {
+    setMsg('updating host to central version...');
+    setBusy(true);
+    try {
+      const r = await Meteor.callAsync('tg.hosts.update', id);
+      setMsg(r.ok ? '✓ updated' : `failed: ${(r.log || r.stderr || '').slice(0, 200)}`);
+      load();
+    } catch (e) { setMsg(e.message); }
+    setBusy(false);
+  };
 
   const remove = async (id) => {
     setMsg('removing — stopping service + revoking this host key...');
@@ -75,18 +104,32 @@ export function HostsPane() {
       ))}
 
       <table className="usage-table">
-        <thead><tr><th>Name</th><th>Address</th><th>SSH</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Address</th><th>SSH</th><th>Status</th><th>Version</th><th>Uptime</th><th></th></tr></thead>
         <tbody>
           {hosts.map((h) => (
             <tr key={h.id}>
               <td>{h.name}</td>
               <td className="mono">{h.address}</td>
               <td className="mono">{h.ssh_user}@:{h.port}</td>
-              <td>{h.status === 'active' ? '✓ active' : h.status}</td>
+              <td>{h.status === 'active' ? '✓ active' : h.status}{h.last_seen ? '' : ''}</td>
+              <td className="mono">
+                {h.host_version_short || '—'}
+                {h.host_version_short && h.host_version_short !== 'none' && centralVer &&
+                  (h.host_version_short === centralVer ? ' ✓' : ` ≠ central ${centralVer}`)}
+              </td>
+              <td>{h.uptime_s ? Math.floor(h.uptime_s / 3600) + 'h' : '—'}</td>
               <td>
                 <button className="btn small" disabled={busy}
                         onClick={() => provision(h.id)}>
                   {h.status === 'active' ? 're-provision' : 'provision'}
+                </button>{' '}
+                <button className="btn small" disabled={busy}
+                        onClick={() => updateNow(h.id)}>
+                  update
+                </button>{' '}
+                <button className="btn small" disabled={busy}
+                        onClick={() => checkNow(h.id)}>
+                  check
                 </button>{' '}
                 <button className="btn small danger" disabled={busy}
                         onClick={() => remove(h.id)}>
