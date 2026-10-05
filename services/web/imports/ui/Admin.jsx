@@ -12,6 +12,7 @@ export function Admin() {
   const [msg, setMsg] = useState('');
   const [issued, setIssued] = useState(null);
   const [hosts, setHosts] = useState([]);
+  const [hostId, setHostId] = useState('');
   useEffect(() => {
     Meteor.callAsync('tg.hosts.list').then((r) => setHosts(r.hosts || []));
   }, []);
