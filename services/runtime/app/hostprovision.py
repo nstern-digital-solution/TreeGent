@@ -87,7 +87,15 @@ id -u treegent >/dev/null 2>&1 || useradd -m -s /bin/bash treegent
 id -u tgexec >/dev/null 2>&1 || useradd -m -s /bin/bash tgexec
 mkdir -p /opt/TreeGent /var/log/treegent
 
-# 2) repo + venv
+# 2) dependencies (fresh Debian/Ubuntu boxes lack python3-venv)
+export DEBIAN_FRONTEND=noninteractive
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update -qq >/dev/null 2>&1 || true
+  apt-get install -y -qq python3-venv python3-pip git >/dev/null 2>&1 \
+    || echo "[provision] WARN: apt install failed — trying anyway"
+fi
+
+# 3) repo + venv
 if [ ! -d /opt/TreeGent/.git ]; then
   git clone -q https://github.com/nstern-digital-solution/TreeGent.git /opt/TreeGent
 else
@@ -95,11 +103,12 @@ else
 fi
 chown -R treegent:treegent /opt/TreeGent /var/log/treegent
 cd /opt/TreeGent
-python3 -m venv .venv 2>/dev/null || true
+rm -rf .venv   # partial venv from a failed run breaks recreation
+python3 -m venv .venv
 .venv/bin/pip install -q -U pip >/dev/null 2>&1 || true
 .venv/bin/pip install -q -r requirements.txt
 
-# 3) runtime-only env file (NEVER the service token; the runtime
+# 4) runtime-only env file (NEVER the service token; the runtime
 #    authenticates as agents with agent keys, not as the central web)
 install -d -m 755 /etc/treegent
 cat > /etc/treegent/runtime.env <<ENVEOF
@@ -116,7 +125,7 @@ TG_RUNTIME_PORT=8010
 ENVEOF
 chmod 600 /etc/treegent/runtime.env
 
-# 4) systemd unit: runtime daemon as treegent, exec as tgexec (R46)
+# 5) systemd unit: runtime daemon as treegent, exec as tgexec (R46)
 cat > /etc/systemd/system/treegent-agent.service <<UNITEOF
 [Unit]
 Description=TreeGent agent runtime ({host_id})
