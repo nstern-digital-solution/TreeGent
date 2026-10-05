@@ -107,3 +107,15 @@ box; central then provisions the machine remotely over SSH.
 - Caddy: /chat /proxy /mail /secrets /files TLS routes for agent hosts
 - verified: central runtime skipped a host-assigned agent; host-scoped
   runtime claimed exactly that one (Jonas Jovic) and nothing else
+
+## R53b — per-host SSH keys (2026-10-04)
+Operator: "You are not creating a ssh key per agent host like I asked you
+are you?" — correct; v1 used ONE central keypair for all hosts.
+- ONE ed25519 keypair PER host, generated at host creation
+  (~/.treegent/agenthosts/<host_id>_ed25519, 0600, dir 0700)
+- private halves NEVER in Mongo/UI — central box filesystem only
+- Hosts tab shows PER-HOST one-liners (each authorizes only that key)
+- remove host = stop+disable service on the box (best-effort),
+  strip its authorized_keys line, DELETE the central keypair —
+  revocation is per host; a leaked key exposes exactly one machine
+- verified: 2 hosts → 2 distinct keys; DELETE removed only that keypair

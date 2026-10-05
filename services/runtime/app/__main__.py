@@ -71,14 +71,14 @@ class HostIn(BaseModel):
     ssh_user: str = "root"
 
 
-@app.get("/internal/hosts/pubkey")
-async def central_pubkey(x_service_token: str = Header(default="")):
-    """The PUBLIC half of the central provisioning key. The UI shows it in
-    the one-liner the operator runs on the agent box."""
+@app.get("/internal/hosts/{host_id}/pubkey")
+async def host_pubkey(host_id: str, x_service_token: str = Header(default="")):
+    """The PUBLIC half of THIS host's provisioning key (per-host keypairs,
+    R53). The UI shows it in the one-liner the operator runs on that box."""
     if x_service_token != settings.service_token:
         raise HTTPException(401, "bad service token")
-    from .hostprovision import _ensure_central_keypair
-    _, pub = _ensure_central_keypair()
+    from .hostprovision import _host_keypair
+    _, pub = _host_keypair(host_id)
     return {"pubkey": pub}
 
 
@@ -108,6 +108,32 @@ async def add_host(body: HostIn, x_service_token: str = Header(default="")):
          "port": body.port, "ssh_user": body.ssh_user,
          "status": "new", "created_at": _now_iso()})
     return {"id": hid}
+
+
+@app.delete("/internal/hosts/{host_id}")
+async def delete_host(host_id: str, x_service_token: str = Header(default="")):
+    """Remove a host: revoke its keypair (central side) and best-effort
+    remove the authorized_keys line + stop the service on the box."""
+    if x_service_token != settings.service_token:
+        raise HTTPException(401, "bad service token")
+    h = await db.agent_hosts.find_one({"_id": host_id})
+    if not h:
+        raise HTTPException(404, "no such host")
+    from .hostprovision import ssh_run, _delete_host_key, _host_keypair
+    _, pub = _host_keypair(host_id)
+    cleanup = f"""systemctl stop treegent-agent.service 2>/dev/null || true
+systemctl disable treegent-agent.service 2>/dev/null || true
+sed -i '/{pub.split()[1]}/d' ~{h.get('ssh_user', 'root')}/.ssh/authorized_keys 2>/dev/null || true
+echo cleaned"""
+    try:
+        await asyncio.to_thread(
+            ssh_run, host_id, h["address"], h.get("port", 22),
+            h.get("ssh_user", "root"), cleanup, timeout=60)
+    except Exception:
+        pass   # box unreachable — key revocation below still holds
+    _delete_host_key(host_id)
+    await db.agent_hosts.delete_one({"_id": host_id})
+    return {"removed": host_id}
 
 
 @app.post("/internal/hosts/{host_id}/provision")

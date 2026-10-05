@@ -22,24 +22,41 @@ import sys
 from .config import db, settings
 
 
-def _ensure_central_keypair() -> tuple[str, str]:
-    """Return (private_path, public_key_text). Generates on first use."""
-    priv = os.environ.get("TG_SSH_KEY") or os.path.expanduser(
-        "~/.treegent/agenthost_ed25519")
+def _host_keypair(host_id: str) -> tuple[str, str]:
+    """R53 (per-host keys): ONE ed25519 keypair PER agent host, named by
+    host id. Private halves live ONLY on the central box filesystem —
+    never in Mongo, never in the UI. Deleting a host revokes its key
+    (the file is removed); a leaked key exposes exactly one machine."""
+    keydir = os.environ.get("TG_SSH_KEYDIR") or os.path.expanduser(
+        "~/.treegent/agenthosts")
+    os.makedirs(keydir, mode=0o700, exist_ok=True)
+    priv = os.path.join(keydir, f"{host_id}_ed25519")
     pub = priv + ".pub"
     if not os.path.exists(priv):
-        os.makedirs(os.path.dirname(priv), exist_ok=True)
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "",
-                        "-C", "treegent-central", "-f", priv], check=True)
+                        "-C", f"treegent-{host_id}", "-f", priv], check=True)
+        os.chmod(priv, 0o600)
     with open(pub) as f:
         pub_text = f.read().strip()
     return priv, pub_text
 
 
-def ssh_run(host: str, port: int, user: str, script: str,
+def _delete_host_key(host_id: str) -> None:
+    """Revoke: remove this host's keypair from the central box."""
+    keydir = os.environ.get("TG_SSH_KEYDIR") or os.path.expanduser(
+        "~/.treegent/agenthosts")
+    for p in (os.path.join(keydir, f"{host_id}_ed25519"),
+              os.path.join(keydir, f"{host_id}_ed25519.pub")):
+        try:
+            os.remove(p)
+        except FileNotFoundError:
+            pass
+
+
+def ssh_run(host_id: str, host: str, port: int, user: str, script: str,
             timeout: int = 900) -> dict:
     """Run a shell script on the agent host via ssh. Returns rc/stdout/stderr."""
-    priv, _ = _ensure_central_keypair()
+    priv, _ = _host_keypair(host_id)
     cmd = ["ssh", "-i", priv,
            "-p", str(port),
            "-o", "StrictHostKeyChecking=accept-new",
@@ -134,7 +151,7 @@ async def provision_host(host_doc: dict) -> dict:
                                 "provision_started_at": _now()}})
     try:
         r = await asyncio.to_thread(
-            ssh_run, host_doc["address"], host_doc.get("port", 22),
+            ssh_run, hid, host_doc["address"], host_doc.get("port", 22),
             host_doc.get("ssh_user", "root"), script)
         ok = r["rc"] == 0
         await db.agent_hosts.update_one(

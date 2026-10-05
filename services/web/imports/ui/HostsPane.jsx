@@ -3,23 +3,42 @@ import { Meteor } from 'meteor/meteor';
 
 export function HostsPane() {
   const [hosts, setHosts] = useState([]);
-  const [pubkey, setPubkey] = useState('');
+  const [pub, setPub] = useState({});   // {hostId: pubkey} per host
   const [form, setForm] = useState({ name: '', address: '', port: 22, ssh_user: 'root' });
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const load = () => Meteor.callAsync('tg.hosts.list').then((r) => setHosts(r.hosts || []));
-  useEffect(() => {
-    load();
-    Meteor.callAsync('tg.hosts.pubkey').then((r) => setPubkey(r.pubkey || ''));
-  }, []);
+  const load = () => Meteor.callAsync('tg.hosts.list').then(async (r) => {
+    const hs = r.hosts || [];
+    setHosts(hs);
+    // fetch each host's OWN public key for the one-liner
+    for (const h of hs) {
+      if (!pub[h.id]) {
+        try {
+          const k = await Meteor.callAsync('tg.hosts.pubkey', h.id);
+          setPub((p) => ({ ...p, [h.id]: k.pubkey }));
+        } catch (e) { /* ignore */ }
+      }
+    }
+  });
+  useEffect(() => { load(); }, []);
+
+  const remove = async (id) => {
+    setMsg('removing — stopping service + revoking this host key...');
+    try {
+      await Meteor.callAsync('tg.hosts.remove', id);
+      setPub((p) => { const n = { ...p }; delete n[id]; return n; });
+      load();
+      setMsg('removed — this host\'s key no longer works');
+    } catch (e) { setMsg(e.message); }
+  };
 
   const add = async () => {
     setMsg('');
     try {
       await Meteor.callAsync('tg.hosts.add', form.name, form.address, Number(form.port), form.ssh_user);
       setForm({ name: '', address: '', port: 22, ssh_user: 'root' });
-      load();
+      await load();
     } catch (e) { setMsg(e.message); }
   };
 
@@ -35,10 +54,6 @@ export function HostsPane() {
     setBusy(false);
   };
 
-  const oneLiner = pubkey
-    ? `echo "${pubkey}" >> ~/.ssh/authorized_keys`
-    : '(generating key...)';
-
   return (
     <div className="pane">
       <h3>Agent hosts</h3>
@@ -48,10 +63,16 @@ export function HostsPane() {
         automatic: exec user, repo, service.
       </p>
 
-      <p className="muted">One-time on each host — authorize the central box:</p>
-      <code className="key-reveal" style={{ display: 'block', marginBottom: 12 }}>
-        {oneLiner}
-      </code>
+      <p className="muted">One-time PER HOST — each host has its own key
+        (removing a host revokes only that key):</p>
+      {hosts.map((h) => pub[h.id] && (
+        <div key={`k-${h.id}`} style={{ marginBottom: 10 }}>
+          <span className="muted">{h.name}: </span>
+          <code className="key-reveal" style={{ display: 'block' }}>
+            echo "{pub[h.id]}" >> ~/.ssh/authorized_keys
+          </code>
+        </div>
+      ))}
 
       <table className="usage-table">
         <thead><tr><th>Name</th><th>Address</th><th>SSH</th><th>Status</th><th></th></tr></thead>
@@ -66,6 +87,10 @@ export function HostsPane() {
                 <button className="btn small" disabled={busy}
                         onClick={() => provision(h.id)}>
                   {h.status === 'active' ? 're-provision' : 'provision'}
+                </button>{' '}
+                <button className="btn small danger" disabled={busy}
+                        onClick={() => remove(h.id)}>
+                  remove
                 </button>
               </td>
             </tr>

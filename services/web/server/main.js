@@ -235,9 +235,19 @@ Meteor.methods({
       headers: { 'X-Service-Token': SERVICE_TOKEN } });
     return r.json();
   },
-  async 'tg.hosts.pubkey'() {
-    const r = await fetch(`${RUNTIME_URL}/internal/hosts/pubkey`, {
+  async 'tg.hosts.pubkey'(hostId) {
+    check(hostId, String);
+    const r = await fetch(`${RUNTIME_URL}/internal/hosts/${hostId}/pubkey`, {
       headers: { 'X-Service-Token': SERVICE_TOKEN } });
+    if (!r.ok) throw new Meteor.Error('hosts', `${r.status}`);
+    return r.json();
+  },
+  async 'tg.hosts.remove'(hostId) {
+    check(hostId, String);
+    const r = await fetch(`${RUNTIME_URL}/internal/hosts/${hostId}`, {
+      method: 'DELETE',
+      headers: { 'X-Service-Token': SERVICE_TOKEN } });
+    if (!r.ok) throw new Meteor.Error('hosts', `${r.status}`);
     return r.json();
   },
   async 'tg.hosts.add'(name, address, port, sshUser) {
