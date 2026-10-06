@@ -52,10 +52,28 @@ async def _startup() -> None:
                 await db.mailboxes.delete_one({"_id": old_box["_id"]})
                 print(f"[mail] migrated {old_box['address']} -> {addr} "
                       f"({moved.modified_count} messages)")
-        if not await db.mailboxes.find_one({"_id": canonical_id}):
+        box = await db.mailboxes.find_one({"_id": canonical_id})
+        if not box:
             await db.mailboxes.insert_one({
                 "_id": canonical_id, "address": addr, "kind": "personal",
                 "owner": a["_id"], "created_at": datetime.datetime.utcnow()})
+        elif (box.get("kind") == "personal"
+              and box.get("owner") != a["_id"]):
+            # R60b: the canonical box exists but points at ANOTHER owner.
+            # If that owner actor no longer exists, the agent row was
+            # recreated with a new id (same persona -> same address ->
+            # same _id) and the box is orphaned: claim it for this agent.
+            old_owner = await db.actors.find_one({"_id": box.get("owner")})
+            if not old_owner:
+                await db.mailboxes.update_one(
+                    {"_id": canonical_id},
+                    {"$set": {"owner": a["_id"]}})
+                print(f"[mail] claimed orphaned {addr} for {a['username']} "
+                      f"(old owner {box.get('owner')} no longer exists)")
+            else:
+                # address taken by a LIVE different actor (name collision)
+                print(f"[mail] WARN {addr} owned by live actor "
+                      f"{box.get('owner')} — not claiming")
 
 
 @app.get("/health")
