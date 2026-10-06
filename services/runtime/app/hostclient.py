@@ -92,21 +92,21 @@ def session_path(workspace: str) -> Path:
 def _sanitize(messages: list[dict], max_messages: int = 200) -> list[dict]:
     """Heal the failure-storm bloat: a dead provider used to leave
     hundreds of identical user lines (re-appended unread backlogs and
-    '[generation failed]' retry stubs). Collapse runs of identical user
-    messages, drop failure stubs entirely, keep the newest tail."""
-    seen_run = None
+    '[generation failed]' retry stubs). Drop failure stubs, keep only
+    the FIRST occurrence of each distinct user message (a re-delivered
+    old message between newer ones would otherwise be answered AGAIN),
+    keep the newest tail."""
+    seen_users: set[str] = set()
     out = []
     for m in messages:
         role = m.get("role")
         content = m.get("content") or ""
-        if role == "user" and content.startswith("[generation failed"):
-            continue    # retry noise, never real conversation
         if role == "user":
-            if content == seen_run:
-                continue    # identical consecutive duplicate (backlog re-append)
-            seen_run = content
-        else:
-            seen_run = None
+            if content.startswith("[generation failed"):
+                continue        # retry noise, never real conversation
+            if content in seen_users:
+                continue        # duplicate delivery (re-ack race / spin)
+            seen_users.add(content)
         out.append(m)
     return out[-max_messages:]
 
