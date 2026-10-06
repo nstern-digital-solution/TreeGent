@@ -1,6 +1,6 @@
 import { Meteor } from 'meteor/meteor';
 import { Accounts } from 'meteor/accounts-base';
-import { Actors, Conversations, Messages } from '../imports/collections.js';
+import { Actors, Conversations, Messages , AgentTranscripts, Jobs } from '../imports/collections.js';
 import { TaskClasses, Providers, ModelCatalog, UsageEvents } from '../imports/proxyCollections.js';
 import { Mailboxes, MailMessages, Approvals } from '../imports/mailCollections.js';
 import { Secrets, Files, RuntimeTurns } from '../imports/coreCollections.js';
@@ -230,6 +230,34 @@ Meteor.methods({
   },
 
   // ---- agent hosts (R53) ----
+  async 'runtime.session'(agentId, what, opts) {
+    check(agentId, String);
+    check(what, String);
+    check(opts, Match.Maybe(Object));
+    const caller = await Meteor.userAsync();
+    if (!caller || !caller.isAdmin) throw new Meteor.Error('forbidden', 'admin only');
+    if (what === 'transcript') {
+      const docs = await AgentTranscripts.rawCollection().find(
+        { agent_id: agentId },
+        { sort: { ts_received: 1 }, limit: (opts && opts.limit) || 300 },
+      ).toArray();
+      return { lines: docs };
+    }
+    if (what === 'jobs') {
+      const docs = await Jobs.rawCollection().find(
+        {},
+        { sort: { created_at: -1 }, limit: (opts && opts.limit) || 100 },
+      ).projection({ messages: 0, tools: 0 }).toArray().catch(async () => {
+        // projection-after-sort fallback for older drivers
+        const all = await Jobs.rawCollection().find({}).sort({ created_at: -1 })
+          .limit((opts && opts.limit) || 100).toArray();
+        return all.map((j) => { delete j.messages; delete j.tools; return j; });
+      });
+      return { jobs: docs.filter((j) => j.agent_id === agentId) };
+    }
+    throw new Meteor.Error('bad-request', 'unknown what');
+  },
+
   async 'tg.setAgentHost'(agentId, hostId) {
     check(agentId, String);
     const caller = await Meteor.userAsync();

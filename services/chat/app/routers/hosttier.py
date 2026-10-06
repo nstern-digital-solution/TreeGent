@@ -113,6 +113,35 @@ async def host_delivered(agent_id: str, body: dict, host: dict = Depends(_host))
     return {"ok": True}
 
 
+class TranscriptLine(BaseModel):
+    ts: str
+    role: str
+    content: str = ""
+    meta: dict = {}
+
+
+@router.post("/transcript/{agent_id}")
+async def host_transcript(agent_id: str, lines: list[TranscriptLine],
+                          host: dict = Depends(_host)):
+    """R57: hosted agents push transcript lines (injections, replies,
+    tool calls+results) — the session explorer's data. Idempotent via
+    (agent, ts, role, seq) dedupe."""
+    await _own_agent(host, agent_id)
+    docs = [{
+        "_id": f"trl_{agent_id}_{l.ts}_{i}",
+        "agent_id": agent_id, "host_id": host["_id"],
+        "ts": l.ts, "role": l.role,
+        "content": l.content[:8000],
+        "meta": l.meta, "ts_received": idgen.now(),
+    } for i, l in enumerate(lines)]
+    if docs:
+        try:
+            await db.db.agent_transcripts.insert_many(docs, ordered=False)
+        except Exception:  # noqa: BLE001 — duplicate ids on retry: fine
+            pass
+    return {"ok": True, "stored": len(docs)}
+
+
 class TurnReport(BaseModel):
     turn_id: str
     trigger: str

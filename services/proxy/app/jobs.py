@@ -102,6 +102,9 @@ async def submit_job(body: JobIn, agent: dict = Depends(auth_agent)) -> dict:
         "reason": body.reason,
         "status": "queued",
         "prio": prio,
+        "model": None,          # R57: filled at dispatch time
+        "tokens_in": None,      # R57: filled at completion
+        "tokens_out": None,
         "created_at": now(),
         "dispatched_at": None,
         "finished_at": None,
@@ -110,6 +113,22 @@ async def submit_job(body: JobIn, agent: dict = Depends(auth_agent)) -> dict:
     }
     await db.jobs.insert_one(doc)
     return {"job_id": doc["_id"], "status": "queued", "priority": prio}
+
+
+@router.get("/history")
+async def job_history(limit: int = 100, agent: dict = Depends(auth_agent)):
+    """R57: own inference history — model, tokens, status, error per job."""
+    out = []
+    async for j in db.jobs.find(
+            {"agent_id": agent["agent_id"]},
+            {"messages": 0, "tools": 0}).sort("created_at", -1).limit(limit):
+        out.append({
+            "job_id": j["_id"], "created_at": j.get("created_at"),
+            "model": j.get("model"), "status": j.get("status"),
+            "tokens_in": j.get("tokens_in"), "tokens_out": j.get("tokens_out"),
+            "error": j.get("error"), "reason": j.get("reason"),
+        })
+    return {"jobs": out}
 
 
 @router.get("/jobs/{job_id}")

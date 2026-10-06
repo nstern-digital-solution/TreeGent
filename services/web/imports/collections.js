@@ -8,3 +8,5 @@ export const Actors = new Mongo.Collection('actors');
 export const Conversations = new Mongo.Collection('conversations');
 export const Messages = new Mongo.Collection('messages');
 export const Inbox = new Mongo.Collection('inbox');
+export const AgentTranscripts = new Mongo.Collection('agent_transcripts');
+export const Jobs = new Mongo.Collection('jobs');

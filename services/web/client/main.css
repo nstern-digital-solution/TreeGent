@@ -86,3 +86,13 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f6f8fa; color
 .detail-row td { background: rgba(0,0,0,.03); }
 .mono-block { font-family: ui-monospace, monospace; font-size: .8rem; padding: .5rem; }
 .mono-line { white-space: pre-wrap; word-break: break-word; padding: .15rem 0; }
+
+/* R57 session explorer */
+.tr-line { border-left: 3px solid var(--border, #ccc); padding: 4px 10px; margin: 6px 0; }
+.tr-inj { border-left-color: #58a6ff; background: rgba(88,166,255,.06); }
+.tr-tool { border-left-color: #d29922; background: rgba(210,153,34,.06); }
+.tr-assistant { border-left-color: #3fb950; }
+.tr-head { font-size: 12px; }
+.tr-body { margin: 4px 0 0; white-space: pre-wrap; font-size: 12px; font-family: ui-monospace, monospace; }
+table.data { border-collapse: collapse; width: 100%; font-size: 12px; margin: 8px 0 16px; }
+table.data th, table.data td { border: 1px solid var(--border, #ccc); padding: 3px 6px; text-align: left; }

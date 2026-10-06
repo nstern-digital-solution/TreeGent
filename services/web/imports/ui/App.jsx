@@ -13,6 +13,7 @@ import { ApprovalsPane, MailPane } from './MailPane.jsx';
 import { SecretsPane } from './SecretsPane.jsx';
 import { FilesPane } from './FilesPane.jsx';
 import { AgentsPane } from './AgentsPane.jsx';
+import { SessionPane } from './SessionPane.jsx';
 import { HostsPane } from './HostsPane.jsx';
 
 export function App() {
@@ -27,6 +28,12 @@ export function App() {
   }, [user]);
 
   const isAdmin = !!(user && user.isAdmin);
+
+  const actors = useTracker(() => {
+    if (!user) return [];
+    Meteor.subscribe('actors');
+    return Actors.find({}, { sort: { username: 1 } }).fetch();
+  }, [user]);
 
   if (loggingIn) return <div className="loading">loading…</div>;
   if (!user) return <LoginScreen />;
@@ -43,6 +50,7 @@ export function App() {
           {isAdmin && <button className={`tab ${tab === 'usage' ? 'on' : ''}`} onClick={() => setTab('usage')}>Usage</button>}
           {isAdmin && <button className={`tab ${tab === 'models' ? 'on' : ''}`} onClick={() => setTab('models')}>Models</button>}
           {isAdmin && <button className={`tab ${tab === 'hosts' ? 'on' : ''}`} onClick={() => setTab('hosts')}>Hosts</button>}
+          {isAdmin && <button className={`tab ${tab === 'session' ? 'on' : ''}`} onClick={() => setTab('session')}>Sessions</button>}
           <button className={`tab ${tab === 'approvals' ? 'on' : ''}`} onClick={() => setTab('approvals')}>Approvals</button>
           <button className={`tab ${tab === 'mail' ? 'on' : ''}`} onClick={() => setTab('mail')}>Mail</button>
           <button className={`tab ${tab === 'secrets' ? 'on' : ''}`} onClick={() => setTab('secrets')}>Secrets</button>
@@ -65,6 +73,7 @@ export function App() {
       {tab === 'secrets' && <SecretsPane />}
       {tab === 'files' && <FilesPane />}
       {tab === 'agents' && <AgentsPane />}
+      {tab === 'session' && <SessionPane actors={actors} />}
       {tab === 'hosts' && isAdmin && <HostsPane />}
     </div>
   );

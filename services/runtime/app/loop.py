@@ -68,6 +68,7 @@ class Agent:
         self.hc = HOST
         self._pending_inbox_ids: list[str] = []
         self._pending_wake_ids: list[str] = []
+        self._turn_lines: list[dict] = []       # R57: transcript lines this turn
 
     def _base_prompt(self) -> str:
         """Operating core of the system prompt (below the soul block)."""
@@ -304,6 +305,7 @@ before guessing parameters. Prefer the narrow tool over the broad one
 
     async def _run_turn_inner(self, trigger: str) -> None:
         self.busy = True
+        self._turn_lines = []   # R57: fresh per turn
         turn_id = f"trn_{os.urandom(6).hex()}"
         started = now()
         injections: list[str] = []
@@ -323,6 +325,10 @@ before guessing parameters. Prefer the narrow tool over the broad one
                               f"since your last turn."]
             self.messages.append({"role": "user",
                                   "content": "\n".join(injections)})
+            self._turn_lines.append({
+                "ts": started.isoformat(), "role": "injection",
+                "content": "\n".join(injections)[:8000],
+                "meta": {"trigger": trigger}})
             dm_lines = [l for l in injections
                         if l.startswith("You have a new message from ")]
             if dm_lines:
@@ -377,10 +383,18 @@ before guessing parameters. Prefer the narrow tool over the broad one
                         self.messages.append(
                             {"role": "tool", "tool_call_id": c.get("id", fn),
                              "content": tool_msg[:8000]})
+                        self._turn_lines.append({
+                            "ts": now().isoformat(), "role": "tool",
+                            "content": tool_msg[:4000],
+                            "meta": {"tool": fn, "args": args,
+                                     "call_id": c.get("id", fn)}})
                     continue  # next generation with tool results
                 # plain answer -> turn complete
                 self.messages.append(assistant)
                 final_text = assistant.get("content", "") or ""
+                self._turn_lines.append({
+                    "ts": now().isoformat(), "role": "assistant",
+                    "content": final_text[:8000], "meta": {}})
                 already = False
                 if self._reply_ctx:
                     sender = self._reply_ctx["sender"].lower()
@@ -418,7 +432,18 @@ before guessing parameters. Prefer the narrow tool over the broad one
                         "steps": steps, "final": final_text[:4000],
                         "started": started.isoformat(),
                         "ended": now().isoformat()})
+                    await self.hc.push_transcript(self.id, self._turn_lines)
                 else:
+                    # R57 central agents: transcript lines straight to Mongo
+                    if self._turn_lines:
+                        try:
+                            await _cdb().client.treegent.agent_transcripts.insert_many(
+                                [{"_id": f"trl_{self.id}_{turn_id}_{i}",
+                                  "agent_id": self.id, "host_id": None,
+                                  **l} for i, l in enumerate(self._turn_lines)],
+                                ordered=False)
+                        except Exception:  # noqa: BLE001 — dedupe on retry
+                            pass
                     await turns.insert_one({
                         "_id": turn_id, "agent_id": self.id, "trigger": trigger,
                         "injections": injections, "steps": steps,

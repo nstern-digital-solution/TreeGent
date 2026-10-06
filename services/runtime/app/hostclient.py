@@ -72,6 +72,14 @@ class HostClient:
     async def turn_report(self, agent_id: str, report: dict) -> None:
         await self._call("POST", f"/internal/host/turn/{agent_id}", report)
 
+    async def push_transcript(self, agent_id: str, lines: list[dict]) -> None:
+        """R57: ship this turn's transcript lines to central for the
+        session explorer (bounded: content capped server-side too)."""
+        if not lines:
+            return
+        await self._call("POST", f"/internal/host/transcript/{agent_id}",
+                         lines, timeout=60.0)
+
 
 # ---------------- local transcript storage (workspace files) ----------------
 

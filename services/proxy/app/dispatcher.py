@@ -204,6 +204,7 @@ async def meter(job: dict, model_id: str, status: str, queue_wait_s: float):
                         + (usage.get("completion_tokens") or 0),
         "queue_wait_s": round(queue_wait_s, 3),
         "status": status,
+        "error": (job.get("error") or "")[:500] or None,
         "ts": now(),
     })
 
@@ -215,8 +216,11 @@ async def process_job(job: dict):
                   if job.get("created_at") else 0.0)
     try:
         resp, model_id = await run_with_failover(job)
+        usage = resp.get("usage") or {}
         await db.jobs.update_one({"_id": job["_id"]}, {"$set": {
-            "model": model_id, "result": resp}})
+            "model": model_id, "result": resp,
+            "tokens_in": usage.get("prompt_tokens") or 0,
+            "tokens_out": usage.get("completion_tokens") or 0}})
         await meter({**job, "result": resp}, model_id, "ok", queue_wait)
         await db.history.insert_one({  # R34: full content history
             "_id": job["_id"],
@@ -231,6 +235,7 @@ async def process_job(job: dict):
         await db.jobs.update_one({"_id": job["_id"]}, {"$set": {
             "status": "done", "finished_at": now()}})
     except Exception as e:  # noqa: BLE001
+        job["error"] = getattr(e, "message", str(e))
         await meter(job, job.get("model") or "?", "error", queue_wait)
         await db.jobs.update_one({"_id": job["_id"]}, {"$set": {
             "status": "failed", "error": str(e)[:500],
