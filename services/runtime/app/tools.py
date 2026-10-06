@@ -147,6 +147,50 @@ async def t_mail_send(ctx: ToolContext, args: dict) -> str:
             f"(approver decides; status via mail.check)")
 
 
+async def t_mail_read(ctx: ToolContext, args: dict) -> str:
+    """Read your mail. mail.read with no args = your own mailbox overview
+    (address + latest messages). Optional: mailbox=<shared address you are
+    a member of>, limit=<int>, unread_only=<bool>. Also answers 'what is
+    my email address' — the overview lists it."""
+    from urllib.parse import quote
+    params: dict = {"limit": str(max(1, min(int(args.get("limit", 10)), 50)))}
+    # 1) which mailboxes can I read?
+    boxes = await ctx.svcs._call(settings.mail_url, "/mailboxes")
+    mine = [b for b in boxes if b.get("kind") == "personal"
+            and b.get("owner") == ctx.agent_id]
+    shared = [b for b in boxes if b.get("kind") == "shared"]
+    if args.get("mailbox"):
+        want = str(args["mailbox"]).strip().lower()
+        cand = [b for b in mine + shared
+                if b.get("address", "").lower() == want]
+        if not cand:
+            return (f"ERROR: no readable mailbox {want!r}; you own "
+                    + ", ".join(b["address"] for b in mine) if mine
+                    else "none")
+        target = cand[0]
+    else:
+        if not mine and not shared:
+            return ("no mailbox yet — your address is created when your "
+                    "superior provisions one for you (Mail tab)")
+        target = mine[0] if mine else shared[0]
+    msgs = await ctx.svcs._call(
+        settings.mail_url,
+        f"/mailboxes/{quote(target['id'])}/messages", params=params)
+    lines = [f"mailbox: {target['address']} ({target['kind']})"]
+    if args.get("unread_only"):
+        msgs = [m for m in msgs if m.get("direction") == "in"]
+    for m in msgs:
+        d = "→" if m.get("direction") == "out" else "←"
+        lines.append(f"[{m.get('ts', '')}] {d} from {m.get('from') or '?'} "
+                     f"| {m.get('subject', '')}")
+        body = (m.get("text") or "")[:500]
+        if body:
+            lines.append(f"    {body}")
+    if len(lines) == 1:
+        lines.append("(no messages)")
+    return "\n".join(lines)
+
+
 async def t_mail_check(ctx: ToolContext, args: dict) -> str:
     """Pending approvals: waiting on me + requested by me (R37)."""
     inbox = await ctx.svcs._call(settings.mail_url, "/approvals",
@@ -533,6 +577,7 @@ TOOLS: dict = {
     "chat.send": t_chat_send,
     "chat.check": t_chat_check,
     "mail.send": t_mail_send,
+    "mail.read": t_mail_read,
     "mail.check": t_mail_check,
     "approvals.decide": t_approval_decide,
     "secrets.list": t_secrets_list,
@@ -573,6 +618,13 @@ TOOL_SCHEMAS = [
             "text": {"type": "string"},
             "mode": {"type": "string", "enum": ["background", "foreground"]},
             "required": ["from", "to", "subject", "text"]}}},
+    {
+        "name": "mail.read",
+        "description": "read your mailbox: your address + latest messages. Optional mailbox=<shared address you belong to>, limit, unread_only. Use this to learn your own email address.",
+        "parameters": {"type": "object", "properties": {
+            "mailbox": {"type": "string", "description": "shared mailbox address (optional; default = your personal one)"},
+            "limit": {"type": "integer", "description": "max messages (default 10)"},
+            "unread_only": {"type": "boolean", "description": "only incoming"}}}},
     {
         "name": "mail.check", "description": "list pending approvals: waiting on me + requested by me",
         "parameters": {"type": "object", "properties": {}}},

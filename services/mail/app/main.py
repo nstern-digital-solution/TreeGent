@@ -53,67 +53,45 @@ class MailboxIn(BaseModel):
 
 
 @router.get("/mailboxes")
-async def list_mailboxes(caller_id: str = ""):
+async def list_mailboxes(caller_id: str = "",
+                         _c: dict = Depends(caller_actor)):
     """R40 own-scope LISTING: only mailboxes the caller owns or is a member
-    of. Superior reach-down never appears here — it happens on a NAMED
-    mailbox via /mailboxes/{id}/messages (rule: mailboxes.read)."""
-    if not caller_id:
-        raise HTTPException(401, "caller_id required")
-    p = await principal_for(db, caller_id)
+    of. Auth REQUIRED (agent key or service token, R45): key-derived
+    identity wins over any caller_id param."""
+    aid = _c["_id"]                 # key-derived identity, never param trust
+    p = await principal_for(db, aid)
     out = []
     async for mb in mailboxes.find():
-        owners = [mb["owner"]] if mb["kind"] == "personal" else []
-        members = mb.get("members", []) if mb["kind"] == "shared" else []
-        if await can(db, p, "mailboxes.list",
-                     await resource_for(db, owners, members)):
-            out.append({"id": mb["_id"], "address": mb["address"],
-                        "kind": mb["kind"], "owner": mb.get("owner"),
-                        "members": members})
+        # hard scope: own personal box, or shared box this actor belongs to
+        if mb["kind"] == "personal" and mb.get("owner") != aid:
+            continue
+        if mb["kind"] == "shared" and aid not in mb.get("members", []):
+            continue
+        if not await can(db, p, "mailboxes.list",
+                         await resource_for(
+                             db,
+                             [mb["owner"]] if mb["kind"] == "personal" else [],
+                             mb.get("members", []) if mb["kind"] == "shared" else [])):
+            continue
+        out.append({"id": mb["_id"], "address": mb["address"],
+                    "kind": mb["kind"], "owner": mb.get("owner"),
+                    "members": mb.get("members", [])})
     return out
 
 
-@router.post("/mailboxes", status_code=201,
-             )
-async def create_mailbox(body: MailboxIn):
-    if body.kind not in ("personal", "shared"):
-        raise HTTPException(400, "kind must be personal or shared")
-    if "@" not in body.address:
-        raise HTTPException(400, "address must be a full email address")
-    if body.kind == "personal" and not body.owner:
-        raise HTTPException(400, "personal mailbox needs an owner")
-    if await mailboxes.find_one({"address": body.address}):
-        raise HTTPException(409, "mailbox address already exists")
-    if body.owner:
-        a = await actors.find_one({"_id": body.owner, "kind": "agent"})
-        if not a:
-            raise HTTPException(400, "owner must be an agent actor id")
-    for m in body.members:
-        a = await actors.find_one({"_id": m, "kind": "agent"})
-        if not a:
-            raise HTTPException(400, f"member {m!r} must be an agent actor id")
-    doc = {"_id": f"mbx_{body.address.replace('@', '_at_')}",
-           "address": body.address, "kind": body.kind}
-    if body.owner:
-        doc["owner"] = body.owner
-    if body.members:
-        doc["members"] = list(body.members)
-    await mailboxes.insert_one(doc)
-    return {"id": doc["_id"], "address": body.address}
-
-
-@router.get("/mailboxes/{mbx_id}/messages",
-            )
-async def list_messages(mbx_id: str, limit: int = 50, caller_id: str = ""):
+@router.get("/mailboxes/{mbx_id}/messages")
+async def list_messages(mbx_id: str, limit: int = 50,
+                        _c: dict = Depends(caller_actor)):
+    """R40: read a named mailbox. Key-derived identity (R45) — an agent
+    may ONLY read its own personal box or a shared box it belongs to."""
     mb = await mailboxes.find_one({"_id": mbx_id})
     if not mb:
         raise HTTPException(404, "no such mailbox")
-    p = await principal_for(db, caller_id) if caller_id else None
-    if p:
-        owners = [mb["owner"]] if mb["kind"] == "personal" else []
-        members = mb.get("members", []) if mb["kind"] == "shared" else []
-        if not await can(db, p, "mailboxes.read",
-                         await resource_for(db, owners, members)):
-            raise HTTPException(403, "not allowed to read this mailbox")
+    aid = _c["_id"]
+    if mb["kind"] == "personal" and mb.get("owner") != aid:
+        raise HTTPException(403, "not your mailbox")
+    if mb["kind"] == "shared" and aid not in mb.get("members", []):
+        raise HTTPException(403, "not a member of this mailbox")
     out = []
     async for m in mail_messages.find({"mailbox_id": mbx_id}) \
             .sort("ts", -1).limit(min(limit, 200)):
