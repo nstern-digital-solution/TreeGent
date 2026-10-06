@@ -27,7 +27,7 @@ async def resolve_actor(username: str, _: None = Depends(require_service)):
 
 
 @router.get("/agent-inbox")
-async def agent_inbox(agent_id: str, _: None = Depends(require_service)):
+async def agent_inbox(agent_id: str, _: None = Depends(require_service_only)):
     """Undelivered chat messages for an agent, oldest first."""
     out = []
     async for row in db.inbox.find(
@@ -45,7 +45,7 @@ async def agent_inbox(agent_id: str, _: None = Depends(require_service)):
 
 
 @router.post("/agent-inbox-delivered")
-async def agent_inbox_delivered(body: dict, _: None = Depends(require_service)):
+async def agent_inbox_delivered(body: dict, _: None = Depends(require_service_only)):
     await db.inbox.update_many(
         {"recipient_id": body.get("agent_id"), "delivered_at": None},
         {"$set": {"delivered_at": idgen.now()}})
@@ -71,7 +71,7 @@ async def issue_agent_key(agent_id: str, actor: dict = Depends(require_service))
 
 @router.patch("/agents/{agent_id}/host")
 async def set_agent_host(agent_id: str, body: dict = Body(...),
-                         _: None = Depends(require_service)):
+                         _: None = Depends(require_service_only)):
     """R55: move an agent between hosts (null = central)."""
     host_id = body.get("host_id")  # explicit null must survive (back to central)
     if host_id is not None:

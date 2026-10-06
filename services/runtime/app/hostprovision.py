@@ -17,6 +17,8 @@ import base64
 import os
 import secrets
 import subprocess
+
+from treegent_common.hostauth import new_host_key, hash_host_key
 import importlib.util
 import sys
 
@@ -70,20 +72,26 @@ def ssh_run(host_id: str, host: str, port: int, user: str, script: str,
             "stderr": p.stderr.decode()[-2000:]}
 
 
-def _agenthost_script(host_id: str) -> str:
+def _agenthost_script(host_id: str) -> tuple[str, str]:
     """The provisioning script executed on the agent host.
 
-    Env comes from the central box at provision time (never stored in Mongo):
-      TG_MONGO_URL      the SAME database the central services use
-      TG_PUBLIC_URL     https://central-domain — service routes via Caddy
+    Returns (script, host_key). Env comes from the central box at provision
+    time and is NEVER stored in Mongo:
+      TG_RUNTIME_HOST_KEY   per-host secret (hash persists in agent_hosts)
+      TG_PUBLIC_URL-derived service URLs over TLS
+    R56: no database credential is written — hosted runtimes are HTTPS
+    clients of the central services.
     """
-    mongo = os.environ.get("TG_MONGO_URL", "")
     public = os.environ.get("TG_PUBLIC_URL", "http://127.0.0.1")
+    # R56: hosts authenticate to chat with a per-host key; NO Mongo URL
+    # ever leaves the central box again. (hash stored in agent_hosts by
+    # the provision endpoint; the secret itself only in runtime.env)
+    host_key = new_host_key()
     # per-host random runtime token: the daemon's own /internal API must not
     # validate against any well-known value (agents get exec on this box)
     rt_token = "rt_" + secrets.token_hex(24)
     agent_keyfile = "/etc/treegent/agent-keyfile"
-    return f"""set -euo pipefail
+    script = f"""set -euo pipefail
 echo "[provision] start on $(hostname) for host {host_id}"
 
 # 1) user + dirs
@@ -122,8 +130,8 @@ chown -R treegent:treegent /opt/TreeGent
 #    authenticates as agents with agent keys, not as the central web)
 install -d -m 755 /etc/treegent
 cat > /etc/treegent/runtime.env <<'ENVEOF'
-TG_MONGO_URL={mongo}
 TG_RUNTIME_HOST_ID={host_id}
+TG_RUNTIME_HOST_KEY={host_key}
 TG_RUNTIME_EXEC_ENABLED=true
 TG_RUNTIME_EXEC_USER=tgexec
 TG_RUNTIME_SERVICE_TOKEN={rt_token}
@@ -166,14 +174,16 @@ systemctl restart treegent-agent.service   # enable --now is a NO-OP on a runnin
 
 echo "[provision] done — treegent-agent.service active"
 """
+    return script, host_key
 
 
 async def provision_host(host_doc: dict) -> dict:
     """SSH in and provision. Updates the host row with status + log."""
     hid = host_doc["_id"]
-    script = _agenthost_script(hid)
+    script, host_key = _agenthost_script(hid)
     await db.agent_hosts.update_one(
         {"_id": hid}, {"$set": {"status": "provisioning",
+                                "host_key_hash": hash_host_key(host_key),
                                 "provision_started_at": _now()}})
     try:
         r = await asyncio.to_thread(

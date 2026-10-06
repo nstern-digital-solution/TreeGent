@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     exec_enabled: bool = True            # R48: False on reserved hosts
     host_id: str = Field(default="",
                       validation_alias=AliasChoices("TG_RUNTIME_HOST_ID", "TG_HOST_ID"))
+    # R56: per-host secret from provisioning; presence = hosted (no-Mongo) mode
+    host_key: str = Field(default="",
+                      validation_alias=AliasChoices("TG_RUNTIME_HOST_KEY", "TG_HOST_KEY"))
     # (TG_RUNTIME_EXEC_ENABLED shared name handled by prefix already)
     max_turn_steps: int = 24           # tool-call steps per turn before forced stop
     search_backend: str = ""           # "" = web search disabled (R42)
@@ -42,9 +45,15 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-client = AsyncIOMotorClient(settings.mongo_url)
-db = client[settings.db_name]
+# R56: hosted runtimes (host_key set) NEVER touch Mongo — no credential on
+# the box. The client handle exists only for the central runtime path.
+if settings.host_key:
+    client = None  # type: ignore[assignment]
+    db = None      # type: ignore[assignment]
+else:
+    client = AsyncIOMotorClient(settings.mongo_url)
+    db = client[settings.db_name]
 
-# runtime-owned collections
-turns = db.runtime_turns       # one doc per agent turn (audit of the loop)
-memories = db.agent_memory     # {agent_id, text, ts} — memory search corpus
+# runtime-owned collections (central runtime only; hosted mode has no db)
+turns = db.runtime_turns if db is not None else None
+memories = db.agent_memory if db is not None else None

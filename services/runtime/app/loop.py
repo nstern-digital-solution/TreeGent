@@ -12,9 +12,22 @@ from datetime import datetime, timezone
 import httpx
 
 from . import tools as T
-from .config import db, settings, turns
+from .config import settings, turns
 
 WAKE_POLL_S = 5
+
+
+def _hosted() -> bool:
+    """R56: hosted runtimes carry a host key and NO Mongo credentials."""
+    return bool(settings.host_key)
+
+
+HOST: "HostClient | None" = None   # set in supervise() when hosted
+
+
+def _host_client() -> "HostClient":
+    assert HOST is not None, "hosted mode without client"
+    return HOST
 
 
 def now():
@@ -43,6 +56,10 @@ class Agent:
         self._reply_ctx = None     # sender to auto-post the final answer to
         self.last_turn_end = now()
         self._life_loaded = False   # spec: chatlog is his life — lazy load
+        # R56 hosted mode: pending ids rendered THIS turn (id-scoped ack)
+        self.hc = HOST
+        self._pending_inbox_ids: list[str] = []
+        self._pending_wake_ids: list[str] = []
 
     def _base_prompt(self) -> str:
         """Operating core of the system prompt (below the soul block)."""
@@ -110,6 +127,14 @@ before guessing parameters. Prefer the narrow tool over the broad one
 
 {persona_line(self.actor).split('.')[0]} — that's who you are. Good work."""
 
+    def _regen_system_prompt(self) -> None:
+        """R50: the system message is code + soul files, never stale disk."""
+        from . import soul as SOUL
+        if self.messages and self.messages[0].get("role") == "system":
+            self.messages[0] = {"role": "system",
+                                "content": SOUL.soul_block(self.workspace)
+                                + "\n\n" + self._base_prompt()}
+
     def _refresh_soul(self) -> None:
         """Re-read SOUL.md/MEMORY.md so operator edits apply next turn."""
         from . import soul as SOUL
@@ -123,6 +148,13 @@ before guessing parameters. Prefer the narrow tool over the broad one
         per agent, saved at every turn end). Runs once, inside the loop."""
         if self._life_loaded:
             return
+        if self.hc is not None:
+            from . import hostclient
+            self.messages = hostclient.load_messages(self.workspace) or self.messages
+            self._regen_system_prompt()
+            self._life_loaded = True
+            return
+        from .config import db
         doc = await db.agent_sessions.find_one({"_id": self.id})
         if doc and doc.get("messages"):
             self.messages = doc["messages"]
@@ -137,6 +169,12 @@ before guessing parameters. Prefer the narrow tool over the broad one
         self._life_loaded = True
 
     async def _save_life(self) -> None:
+        if self.hc is not None:
+            # R56: transcript lives on THIS box (atomic jsonl rewrite)
+            from . import hostclient
+            hostclient.save_messages(self.workspace, self.messages)
+            return
+        from .config import db
         await db.agent_sessions.update_one(
             {"_id": self.id},
             {"$set": {"messages": self.messages,
@@ -148,6 +186,8 @@ before guessing parameters. Prefer the narrow tool over the broad one
 
     async def collect_injections(self) -> list[str]:
         """Turn pending world events into system lines (verbatim contract)."""
+        if self.hc is not None:
+            return await self._collect_injections_hosted()
         lines = []
         # 1) undelivered chat inbox rows
         inbox = await self.svcs._call(
@@ -186,9 +226,39 @@ before guessing parameters. Prefer the narrow tool over the broad one
                              f"rejected. Reason: {w.get('detail', 'none')}")
         return lines
 
+    async def _collect_injections_hosted(self) -> list[str]:
+        """R56: fetch pending work via the host-tier API only."""
+        p = await self.hc.pending(self.id)
+        lines = []
+        for m in p.get("inbox", []):
+            lines.append(f"You have a new message from "
+                         f"{m['sender_username']} received at "
+                         f"{m.get('ts', '')}: {m['body']}")
+            self._pending_inbox_ids.append(m["inbox_id"])
+        for w in p.get("wakes", []):
+            reason = w.get("reason")
+            if reason == "mail":
+                lines.append(f"You have new mail waiting (wake {w['wake_id']}) "
+                             "— use mail.check.")
+            elif reason == "approval":
+                lines.append(f"You have a pending approval waiting on you "
+                             f"(id {w.get('approval_id', '?')}) — use mail.check.")
+            elif reason == "approval-rejected":
+                lines.append(f"Your request {w.get('approval_id', '?')} was rejected.")
+            elif reason in ("dm", "mention"):
+                pass   # the inbox rows above already carry the message
+            if reason in ("mail", "approval", "approval-rejected"):
+                self._pending_wake_ids.append(w["wake_id"])
+        return lines
+
     async def _mark_consumed(self) -> None:
         """R43-safe: only after the turn survived. Called from run_turn
         success path — a crashed turn re-injects its events next poll."""
+        if self.hc is not None:
+            await self.hc.delivered(self.id, self._pending_inbox_ids,
+                                    self._pending_wake_ids)
+            self._pending_inbox_ids, self._pending_wake_ids = [], []
+            return
         wakes = [w async for w in db.wake_events.find(
             {"agent_id": self.id, "consumed": False,
              "reason": {"$in": ["mail", "approval", "approval-rejected"]}})
@@ -201,8 +271,12 @@ before guessing parameters. Prefer the narrow tool over the broad one
                               "POST", body={"agent_id": self.id})
 
     async def heartbeat_due(self) -> bool:
-        doc = await db.agents_runtime.find_one({"_id": self.id}) or {}
-        interval = doc.get("heartbeat_s", settings.heartbeat_s)  # R44
+        if self.hc is not None:
+            interval = settings.heartbeat_s
+        else:
+            from .config import db
+            doc = await db.agents_runtime.find_one({"_id": self.id}) or {}
+            interval = doc.get("heartbeat_s", settings.heartbeat_s)  # R44
         elapsed = (now() - self.last_turn_end).total_seconds()
         return elapsed >= interval and not self.busy
 
@@ -326,11 +400,18 @@ before guessing parameters. Prefer the narrow tool over the broad one
             self.last_turn_end = now()
             await self._save_life()
             if steps > 0:
-                await turns.insert_one({
-                    "_id": turn_id, "agent_id": self.id, "trigger": trigger,
-                    "injections": injections, "steps": steps,
-                    "final": final_text[:4000], "started": started,
-                    "ended": now()})
+                if self.hc is not None:
+                    await self.hc.turn_report(self.id, {
+                        "turn_id": turn_id, "trigger": trigger,
+                        "steps": steps, "final": final_text[:4000],
+                        "started": started.isoformat(),
+                        "ended": now().isoformat()})
+                else:
+                    await turns.insert_one({
+                        "_id": turn_id, "agent_id": self.id, "trigger": trigger,
+                        "injections": injections, "steps": steps,
+                        "final": final_text[:4000], "started": started,
+                        "ended": now()})
 
     async def _exec_tool(self, fn: str, args: dict) -> str:
         f = T.TOOLS.get(fn)
@@ -346,17 +427,44 @@ before guessing parameters. Prefer the narrow tool over the broad one
 # ---------------- supervisor: one loop task per agent ----------------
 
 async def supervise(state_registry: dict | None = None) -> None:
-    """Dev-box supervisor: watch every agent actor, run their loops.
-    (Fleet shape R19: per-host daemon runs this same function.)"""
+    """Supervisor. R56: hosted runtimes (TG_RUNTIME_HOST_KEY set) run as
+    pure HTTPS clients of the central services — no Mongo credentials on
+    the box. The central runtime (no host key) keeps the direct-Mongo
+    path (shared box, exec off)."""
+    global HOST
     agents: dict[str, Agent] = {}
+    hosted = _hosted()
     own = settings.host_id if settings.host_id else None
-    print(f"[supervisor] starting — "
-          f"{'host ' + own if own else 'CENTRAL (unassigned agents)'}")
+    if hosted:
+        from . import hostclient
+        HOST = hostclient.HostClient(settings.host_id, settings.host_key)
+        print(f"[supervisor] starting — host {own} (R56: HTTPS-only, "
+              "no Mongo credentials on this box)")
+    else:
+        print(f"[supervisor] starting — "
+              f"{'host ' + own if own else 'CENTRAL (unassigned agents)'}")
 
     async def ensure_agents():
-        # R53: agent hosts claim ONLY their agents (actor.host_id);
-        # central runtime (no host_id set) runs the unassigned ones.
-        own = settings.host_id if settings.host_id else None
+        if hosted:
+            # R56: chat hands us exactly OUR agents + current keys.
+            seen: set[str] = set()
+            for a in await HOST.agents():
+                seen.add(a["_id"])
+                if a["_id"] in agents:
+                    continue   # key rotation picked up via a later poll
+                if not a.get("key"):
+                    print(f"[supervisor] no key for {a.get('username')} "
+                          "— skipped (issue one in the admin tab)")
+                    continue
+                agents[a["_id"]] = Agent(a, a["key"])
+                print(f"[supervisor] agent up: {a.get('username')}")
+            for aid in [x for x in agents if x not in seen]:
+                print(f"[supervisor] agent {agents[aid].name} moved/removed "
+                      "— evicted")
+                agents.pop(aid)
+            return
+        # central path (unchanged): claim unassigned keyed agents
+        from .config import db
         async for a in db.actors.find({"kind": "agent"}):
             if a["_id"] in agents:
                 continue
@@ -373,6 +481,18 @@ async def supervise(state_registry: dict | None = None) -> None:
             agents[a["_id"]] = Agent(a, key_doc["_id"])
             print(f"[supervisor] agent up: {a.get('username')}")
 
+    async def has_work(agent: "Agent") -> bool:
+        if hosted:
+            p = await HOST.pending(agent.id)
+            return bool(p.get("inbox")) or bool(p.get("wakes")) \
+                or bool(p.get("mail_pending"))
+        from .config import db
+        has_event = await db.wake_events.find_one(
+            {"agent_id": agent.id, "consumed": False})
+        inbox_row = await db.inbox.find_one(
+            {"recipient_id": agent.id, "delivered_at": None})
+        return bool(has_event or inbox_row)
+
     await ensure_agents()
     if state_registry is not None:
         _sync_state(state_registry, agents)
@@ -388,11 +508,7 @@ async def supervise(state_registry: dict | None = None) -> None:
             try:
                 if agent.busy:
                     continue
-                has_event = await db.wake_events.find_one(
-                    {"agent_id": aid, "consumed": False}) or False
-                inbox_row = await db.inbox.find_one(
-                    {"recipient_id": aid, "delivered_at": None})
-                if has_event or inbox_row:
+                if await has_work(agent):
                     asyncio.create_task(agent.run_turn("event"))
                 elif await agent.heartbeat_due():
                     asyncio.create_task(agent.run_turn("heartbeat"))
