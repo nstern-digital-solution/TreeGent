@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import secrets
 import subprocess
 import importlib.util
 import sys
@@ -78,6 +79,9 @@ def _agenthost_script(host_id: str) -> str:
     """
     mongo = os.environ.get("TG_MONGO_URL", "")
     public = os.environ.get("TG_PUBLIC_URL", "http://127.0.0.1")
+    # per-host random runtime token: the daemon's own /internal API must not
+    # validate against any well-known value (agents get exec on this box)
+    rt_token = "rt_" + secrets.token_hex(24)
     agent_keyfile = "/etc/treegent/agent-keyfile"
     return f"""set -euo pipefail
 echo "[provision] start on $(hostname) for host {host_id}"
@@ -121,6 +125,8 @@ cat > /etc/treegent/runtime.env <<'ENVEOF'
 TG_MONGO_URL={mongo}
 TG_RUNTIME_HOST_ID={host_id}
 TG_RUNTIME_EXEC_ENABLED=true
+TG_RUNTIME_EXEC_USER=tgexec
+TG_RUNTIME_SERVICE_TOKEN={rt_token}
 TG_CHAT_URL={public}/chat
 TG_PROXY_URL={public}/proxy
 TG_MAIL_URL={public}/mail
@@ -150,6 +156,10 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 UNITEOF
+# R46: exec must drop to the unprivileged tgexec user via passwordless sudo
+echo 'treegent ALL=(tgexec) NOPASSWD: ALL' > /etc/sudoers.d/treegent-tgexec
+chmod 440 /etc/sudoers.d/treegent-tgexec
+
 systemctl daemon-reload
 systemctl enable treegent-agent.service
 systemctl restart treegent-agent.service   # enable --now is a NO-OP on a running unit — re-provision must actually restart it

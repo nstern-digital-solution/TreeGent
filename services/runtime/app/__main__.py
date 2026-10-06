@@ -1,4 +1,6 @@
 import asyncio
+import os
+import secrets
 import sys
 
 from fastapi import FastAPI, Header, HTTPException
@@ -11,6 +13,18 @@ from .config import client, db, settings
 from .loop import supervise
 
 app = FastAPI(title="TreeGent runtime", version="0.1.0")
+
+
+def _token_ok(t: str) -> bool:
+    """Fail-closed: the shipped default token never authorizes /internal
+    unless TG_DEV=1 explicitly marks a development machine. Agent hosts
+    run WITHOUT TG_SERVICE_TOKEN (R45), so their runtime API must refuse
+    the well-known default instead of accepting it."""
+    if t != settings.service_token:
+        return False
+    if t == "dev-service-token" and os.environ.get("TG_DEV") != "1":
+        return False
+    return True
 
 # live registry the supervisor refreshes (for the /internal endpoint)
 AGENTS_STATE: dict = {}
@@ -54,7 +68,7 @@ async def health():
 
 @app.get("/internal/agents")
 async def agents_overview(x_service_token: str = Header(default="")):
-    if x_service_token != settings.service_token:
+    if not _token_ok(x_service_token):
         raise HTTPException(401, "bad service token")
     return {"agents": [{"id": aid, "busy": st.get("busy", False),
                         "name": st.get("name")}
@@ -66,7 +80,7 @@ async def agent_history(agent_id: str, x_service_token: str = Header(default="")
                         limit: int = 50):
     """R47: turns + tool calls for the web viewer. Full transcripts only
     with limit=0 (viewer fetches on demand)."""
-    if x_service_token != settings.service_token:
+    if not _token_ok(x_service_token):
         raise HTTPException(401, "bad service token")
     if limit == 0:
         doc = await db.agent_sessions.find_one({"_id": agent_id})
@@ -101,7 +115,7 @@ class HostIn(BaseModel):
 async def host_pubkey(host_id: str, x_service_token: str = Header(default="")):
     """The PUBLIC half of THIS host's provisioning key (per-host keypairs,
     R53). The UI shows it in the one-liner the operator runs on that box."""
-    if x_service_token != settings.service_token:
+    if not _token_ok(x_service_token):
         raise HTTPException(401, "bad service token")
     from .hostprovision import _host_keypair
     _, pub = _host_keypair(host_id)
@@ -110,7 +124,7 @@ async def host_pubkey(host_id: str, x_service_token: str = Header(default="")):
 
 @app.get("/internal/hosts")
 async def list_hosts(x_service_token: str = Header(default="")):
-    if x_service_token != settings.service_token:
+    if not _token_ok(x_service_token):
         raise HTTPException(401, "bad service token")
     out = []
     async for h in db.agent_hosts.find():
@@ -126,7 +140,7 @@ async def list_hosts(x_service_token: str = Header(default="")):
 
 @app.post("/internal/hosts", status_code=201)
 async def add_host(body: HostIn, x_service_token: str = Header(default="")):
-    if x_service_token != settings.service_token:
+    if not _token_ok(x_service_token):
         raise HTTPException(401, "bad service token")
     import secrets
     hid = f"host_{secrets.token_hex(6)}"
@@ -141,7 +155,7 @@ async def add_host(body: HostIn, x_service_token: str = Header(default="")):
 async def delete_host(host_id: str, x_service_token: str = Header(default="")):
     """Remove a host: revoke its keypair (central side) and best-effort
     remove the authorized_keys line + stop the service on the box."""
-    if x_service_token != settings.service_token:
+    if not _token_ok(x_service_token):
         raise HTTPException(401, "bad service token")
     h = await db.agent_hosts.find_one({"_id": host_id})
     if not h:
@@ -165,7 +179,7 @@ echo cleaned"""
 
 @app.post("/internal/hosts/{host_id}/provision")
 async def provision(host_id: str, x_service_token: str = Header(default="")):
-    if x_service_token != settings.service_token:
+    if not _token_ok(x_service_token):
         raise HTTPException(401, "bad service token")
     h = await db.agent_hosts.find_one({"_id": host_id})
     if not h:
@@ -178,7 +192,7 @@ async def provision(host_id: str, x_service_token: str = Header(default="")):
 @app.post("/internal/hosts/{host_id}/check")
 async def check_host(host_id: str, x_service_token: str = Header(default="")):
     """R54: probe one host (service state, version, uptime, load)."""
-    if x_service_token != settings.service_token:
+    if not _token_ok(x_service_token):
         raise HTTPException(401, "bad service token")
     h = await db.agent_hosts.find_one({"_id": host_id})
     if not h:
@@ -192,7 +206,7 @@ async def check_host(host_id: str, x_service_token: str = Header(default="")):
 @app.post("/internal/hosts/{host_id}/update")
 async def update_host(host_id: str, x_service_token: str = Header(default="")):
     """R54: pull the host to the central box's current commit."""
-    if x_service_token != settings.service_token:
+    if not _token_ok(x_service_token):
         raise HTTPException(401, "bad service token")
     h = await db.agent_hosts.find_one({"_id": host_id})
     if not h:
