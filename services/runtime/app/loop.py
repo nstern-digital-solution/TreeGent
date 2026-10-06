@@ -447,8 +447,9 @@ before guessing parameters. Prefer the narrow tool over the broad one
                     await turns.insert_one({
                         "_id": turn_id, "agent_id": self.id, "trigger": trigger,
                         "injections": injections, "steps": steps,
-                        "final": final_text[:4000], "started": started,
-                        "ended": now()})
+                        "final": final_text[:4000],
+                        "started": started.isoformat(),
+                        "ended": now().isoformat()})
 
     async def _exec_tool(self, fn: str, args: dict) -> str:
         f = T.TOOLS.get(fn)

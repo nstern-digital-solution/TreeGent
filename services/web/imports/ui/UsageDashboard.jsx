@@ -22,9 +22,10 @@ export function UsageDashboard() {
     };
   }, [days]);
 
+  const reqRows = [...events].sort((x, y) => (y.ts < x.ts ? -1 : y.ts > x.ts ? 1 : 0)).slice(0, 200);
   const agg = {};
   for (const e of events) {
-    const a = (agg[e.agent_id] ||= { jobs: 0, ok: 0, tokensIn: 0, tokensOut: 0 });
+    const a = (agg[e.agent_id] ||= { jobs:  0, ok: 0, tokensIn: 0, tokensOut: 0 });
     a.jobs += 1;
     if (e.status === 'ok') a.ok += 1;
     a.tokensIn += e.tokens_in || 0;
@@ -64,6 +65,33 @@ export function UsageDashboard() {
           ))}
           {ready && rows.length === 0 && (
             <tr><td colSpan={5} className="muted">No usage yet — submit a job and it lands here live.</td></tr>
+          )}
+        </tbody>
+      </table>
+
+      <h3>Completion requests (newest first)</h3>
+      <p className="muted">Every request as dispatched: model + provider routed, tokens, status, error.</p>
+      <table className="usage-table">
+        <thead>
+          <tr><th>time</th><th>agent</th><th>model</th><th>provider</th>
+              <th>tok in</th><th>tok out</th><th>status</th><th>reason</th><th>error</th></tr>
+        </thead>
+        <tbody>
+          {reqRows.map((e) => (
+            <tr key={e.job_id || (e.ts && String(e.ts)) || Math.random()}>
+              <td>{e.ts ? new Date(e.ts).toLocaleTimeString() : ''}</td>
+              <td>{agentsById[e.agent_id] ? agentsById[e.agent_id].display_name : e.agent_id}</td>
+              <td className="mono">{e.model || '?'}</td>
+              <td>{e.provider || '?'}</td>
+              <td>{e.tokens_in ?? 0}</td>
+              <td>{e.tokens_out ?? 0}</td>
+              <td>{e.status === 'ok' ? '✓ ok' : <span style={{ color: '#e55' }}>{e.status}</span>}</td>
+              <td>{e.reason || '—'}</td>
+              <td style={{ color: '#e55' }}>{(e.error || '').slice(0, 140) || '—'}</td>
+            </tr>
+          ))}
+          {reqRows.length === 0 && (
+            <tr><td colSpan={9} className="muted">no requests recorded yet</td></tr>
           )}
         </tbody>
       </table>

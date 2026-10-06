@@ -123,12 +123,24 @@ Meteor.publish('proxyCatalog', function (limit) {
                 excluded: 1, ctx: 1 } });
 });
 
+Meteor.publish('agentTranscripts', function (agentId, limit) {
+  if (!this.userId) return this.ready();
+  const user = Meteor.users.findOneAsync ? null : null;
+  // admin-only enforced below via user lookup
+  const u = Meteor.users.findOne(this.userId);
+  if (!u || !u.isAdmin) return this.ready();
+  return AgentTranscripts.find({ agent_id: agentId },
+    { sort: { ts_received: 1 }, limit: limit || 500,
+      fields: { agent_id: 1, ts: 1, role: 1, content: 1, meta: 1 } });
+});
+
 Meteor.publish('proxyUsage', function (days) {
   if (!this.userId) return this.ready();
   const cutoff = new Date(Date.now() - (days || 7) * 86400 * 1000);
   return UsageEvents.find({ ts: { $gte: cutoff } },
     { fields: { agent_id: 1, tokens_in: 1, tokens_out: 1,
-                status: 1, model: 1, provider: 1, ts: 1, class: 1 } });
+                status: 1, model: 1, provider: 1, ts: 1, class: 1,
+                error: 1, reason: 1, queue_wait_s: 1, job_id: 1 } });
 });
 
 // --- mail + approvals (M3) ----------------------------------------------

@@ -3,6 +3,7 @@ import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Actors } from '../collections.js';
 import { RuntimeTurns } from '../coreCollections.js';
+import { AgentTranscripts } from '../collections.js';
 
 const call = (path, method, body, asActorId) =>
   Meteor.callAsync('runtime.api', path, method, body, asActorId);
@@ -23,6 +24,12 @@ export function AgentsPane() {
     return RuntimeTurns.find({ agent_id: selected },
       { sort: { started: -1 }, limit: 50 }).fetch();
   }, [selected]);
+  const transcript = useTracker(() => {
+    if (!selected || !expanded) return [];
+    Meteor.subscribe('agentTranscripts', selected, 500);
+    return AgentTranscripts.find({ agent_id: selected },
+      { sort: { ts_received: 1 } }).fetch();
+  }, [selected, expanded]);
   const load = (agentId) => setSelected(agentId);
 
   if (!isAdmin) {
@@ -62,9 +69,25 @@ export function AgentsPane() {
                   <tr className="detail-row">
                     <td colSpan={4}>
                       <div className="mono-block">
-                        <div className="muted small">injections</div>
-                        {(t.injections || []).map((i, k) => (
-                          <div key={k} className="mono-line">{i}</div>
+                        <div className="muted small">session log — messages and tool calls this turn</div>
+                        {(transcript.filter((l) => (l.ts || '') >= (t.started || '').slice(0, 19)
+                          && (l.ts || '') <= ((t.started || '').slice(0, 11)
+                            + (t.ended ? new Date(t.ended).toISOString().slice(11, 19) : '99:99:99')))).map((l) => (
+                          <div key={l._id} className={'tr-line '
+                            + (l.role === 'injection' ? 'tr-inj'
+                              : l.role === 'tool' ? 'tr-tool' : 'tr-assistant')}>
+                            <div className="tr-head">
+                              <b>{l.role}</b>
+                              <span className="muted"> {(l.ts || '').slice(11, 19)}</span>
+                              {l.role === 'tool' && (
+                                <span className="muted">
+                                  {' '}· {(l.meta || {}).tool}
+                                  {(l.meta || {}).args ? ` (${JSON.stringify((l.meta || {}).args).slice(0, 160)})` : ''}
+                                </span>
+                              )}
+                            </div>
+                            <pre className="tr-body">{l.content}</pre>
+                          </div>
                         ))}
                         <div className="muted small" style={{ marginTop: 6 }}>final</div>
                         <div className="mono-line">{t.final || '—'}</div>

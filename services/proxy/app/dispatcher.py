@@ -205,6 +205,7 @@ async def meter(job: dict, model_id: str, status: str, queue_wait_s: float):
         "queue_wait_s": round(queue_wait_s, 3),
         "status": status,
         "error": (job.get("error") or "")[:500] or None,
+        "reason": job.get("reason"),
         "ts": now(),
     })
 
