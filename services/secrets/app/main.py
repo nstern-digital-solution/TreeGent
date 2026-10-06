@@ -85,18 +85,37 @@ class SecretIn(BaseModel):
     url: str = ""
     notes: str = ""
     shared_with: list[str] = []
+    owner: str | None = None    # superior-only "create for" (reach-down)
 
 
 @router.post("/secrets", status_code=201,
              )
 async def create_secret(body: SecretIn, CLAIM_CALLER: str = "", _c: dict = Depends(caller_actor)):
     caller_id = _c["_id"]  # R45: derived, never claimed
-    # sharing grants access to the named actor's own scope
+    # owner field lets a SUPERIOR create a secret directly in a
+    # subordinate's scope ("create for" in the UI while viewing their
+    # list). Guarded: only reach-DOWN — peers, bosses, and strangers are
+    # refused; absent field = self-owned (default, unchanged).
+    owner_id = caller_id
+    if getattr(body, "owner", None):
+        want = body.owner
+        if want != caller_id:
+            target_actor = await db.actors.find_one({"_id": want})
+            if not target_actor:
+                raise HTTPException(404, "owner actor not found")
+            anc = ((target_actor.get("org") or {}).get("ancestors") or [])
+            if caller_id not in anc:
+                raise HTTPException(
+                    403, "only a superior may create secrets in someone "
+                         "else's scope")
+        owner_id = want
+    shared_with = [a for a in dict.fromkeys(
+        list(body.shared_with) + [caller_id]) if a != owner_id] if         owner_id != caller_id else list(body.shared_with)
     doc = {
-        "_id": f"sec_{abs(hash((caller_id, body.name, now().isoformat()))) % 10**16:016d}",
+        "_id": f"sec_{abs(hash((owner_id, body.name, now().isoformat()))) % 10**16:016d}",
         "name": body.name, "username": body.username, "url": body.url,
         "notes": body.notes, "value_enc": crypto.encrypt(body.value),
-        "owner": caller_id, "shared_with": list(body.shared_with),
+        "owner": owner_id, "shared_with": shared_with,
         "created_at": now(), "updated_at": now(),
     }
     await secrets_col.insert_one(doc)

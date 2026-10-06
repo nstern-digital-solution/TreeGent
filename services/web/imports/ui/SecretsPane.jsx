@@ -52,9 +52,19 @@ export function SecretsPane() {
   const save = async (e) => {
     e.preventDefault();
     await run(async () => {
-      await call('/secrets', 'POST', form);
+      const body = { ...form };
+      let note = `Secret ${form.name} saved.`;
+      if (target) {
+        // creating while viewing someone's scope = create FOR them:
+        // they own it, caller is shared back in (superior-only, enforced
+        // server-side)
+        body.owner = target;
+        body.shared_with = Array.from(new Set([...(form.shared_with || []), me._id]));
+        note = `Secret ${form.name} saved for ${actors.find((a) => a._id === target)?.display_name} (shared with you).`;
+      }
+      await call('/secrets', 'POST', body);
       setForm(null);
-      return `Secret ${form.name} saved.`;
+      return note;
     });
   };
 
@@ -141,7 +151,7 @@ export function SecretsPane() {
       {form && (
         <div className="compose-overlay">
           <form className="login-card compose-card" onSubmit={save}>
-            <h3>New secret</h3>
+            <h3>New secret{target ? ` — for ${actors.find((a) => a._id === target)?.display_name}` : ''}</h3>
             <input placeholder="name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             <input placeholder="value" value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} />
             <input placeholder="username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
