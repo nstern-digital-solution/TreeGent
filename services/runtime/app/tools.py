@@ -170,8 +170,10 @@ async def t_mail_read(ctx: ToolContext, args: dict) -> str:
         target = cand[0]
     else:
         if not mine and not shared:
-            return ("no mailbox yet — your address is created when your "
-                    "superior provisions one for you (Mail tab)")
+            return ("no mailbox yet for this agent — the mail service "
+                    "creates it at startup from your name + TG_MAIL_DOMAIN; "
+                    "if it stays missing, ask your operator to check "
+                    "TG_MAIL_DOMAIN and restart the mail service")
         target = mine[0] if mine else shared[0]
     msgs = await ctx.svcs._call(
         settings.mail_url,

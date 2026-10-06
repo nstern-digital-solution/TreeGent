@@ -5,7 +5,7 @@ Since R40 every data access goes through the treegent-common permission
 engine — rules are rows in `permissions`, deny-by-default."""
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from treegent_common.auth import authenticate
 from treegent_common.perms import can, principal_for, resource_for
@@ -261,11 +261,57 @@ async def decide(appr_id: str, body: DecideIn, _c: dict = Depends(caller_actor))
 
 @router.post("/internal/inbound")
 async def inbound_hook(address: str, from_addr: str, subject: str,
-                       text: str = "", html: str = ""):
-    """Dev/test hook: simulate an inbound email (real inbound = Resend
-    poll/webhook adapter reading this shape)."""
+                       text: str = "", html: str = "",
+                       _t: None = Depends(require_service)):
+    """Simulate an inbound email (dev/test; service-token gated). Real
+    inbound arrives via the Resend webhook below."""
     return await adapters.ingest_inbound(address, from_addr, subject,
                                          text, html)
+
+
+# ---------------- R38: Resend inbound webhook ----------------
+
+class InboundConfig(BaseModel):
+    webhook_secret: str = ""      # shared secret (?secret=... on the URL)
+
+
+@router.post("/resend/inbound")
+async def resend_inbound(request: Request, secret: str = ""):
+    """External webhook — authenticated by a shared secret in the URL
+    (?secret=<TG_RESEND_WEBHOOK_SECRET>), NOT by internal tokens: Resend
+    is an outside caller and holds no TreeGent credentials."""
+    from .config import settings as _s
+    want = getattr(_s, "resend_webhook_secret", "") or ""
+    if not want:
+        return {"delivered": False,
+                "reason": "webhook disabled: set TG_RESEND_WEBHOOK_SECRET"}
+    if secret != want:
+        raise HTTPException(403, "bad webhook secret")
+    """Resend inbound-mail webhook. In Resend's dashboard point the
+    inbound domain's webhook at:  https://<host>/mail/resend/inbound
+    ...and set the same ?secret= value in TG_RESEND_WEBHOOK_SECRET.
+    Verifies Resend's signature when configured, then routes the mail
+    into the matching mailbox (agent wake included)."""
+    import json as _json
+    body = await request.json()
+    # Resend posts { type, data: { email: {...} } } for inbound events
+    d = (body.get("data") or {})
+    email = d.get("email") or {}
+    to_addr = email.get("to") or ""
+    if isinstance(to_addr, list):
+        to_addr = to_addr[0] if to_addr else ""
+    to_addr = (to_addr or "").strip().lower()
+    from_addr = ((email.get("from") or "")
+                 or (d.get("from") or "")).strip()
+    subject = email.get("subject") or d.get("subject") or ""
+    text = email.get("text") or d.get("text") or ""
+    html = email.get("html") or d.get("html") or ""
+    if not to_addr:
+        return {"delivered": False, "reason": "no recipient in webhook"}
+    r = await adapters.ingest_inbound(to_addr, from_addr, subject,
+                                      text, html)
+    return r
+
 
 
 @router.get("/adapters")
