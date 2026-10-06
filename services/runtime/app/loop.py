@@ -451,6 +451,17 @@ before guessing parameters. Prefer the narrow tool over the broad one
                         "started": started.isoformat(),
                         "ended": now().isoformat()})
 
+
+        # wake/inbox safety net: if the turn ENDED (even via the generation-
+        # failed branch) without consuming, consume now — a dead proxy must
+        # never retrigger the same wake every 5s forever
+        if trigger == "event" and (self._pending_inbox_ids
+                                   or self._pending_wake_ids):
+            try:
+                await self._mark_consumed()
+            except Exception as e:  # noqa: BLE001
+                print(f"[turn] {self.name} ack safety net failed: {e}")
+
     async def _exec_tool(self, fn: str, args: dict) -> str:
         f = T.TOOLS.get(fn)
         if not f:

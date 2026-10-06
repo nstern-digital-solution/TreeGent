@@ -167,6 +167,7 @@ async def run_with_failover(job: dict) -> tuple[dict, str]:
         raise ProviderError("no model available for class "
                             f"{job['class']!r} (needs={needs or 'any'})")
     tried = []
+    first_err = None
     for m in cands[:4]:
         prov_name = m["provider"]
         provider_doc = (await ready_providers()).get(prov_name)
@@ -182,9 +183,13 @@ async def run_with_failover(job: dict) -> tuple[dict, str]:
             await mark_blocked(f"{prov_name}:{m['_id'].split('/', 1)[1]}",
                                min(wait, 900), "429 rate limited")
         except ProviderError as e:
+            first_err = first_err or str(e)
             await mark_blocked(f"{prov_name}:{m['_id'].split('/', 1)[1]}",
                                30, str(e))
-    raise ProviderError(f"all candidates failed: {', '.join(tried)}")
+    reason = f"all candidates failed: {', '.join(tried)}"
+    if first_err:
+        reason += f" — first error: {first_err[:300]}"
+    raise ProviderError(reason)
 
 
 # ---------------- metering + history (R34; tokens only, no pricing) ----
