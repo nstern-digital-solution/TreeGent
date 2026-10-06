@@ -131,6 +131,17 @@ fi
 uv sync -q
 chown -R treegent:treegent /opt/TreeGent
 
+# 3b) headless Chromium for the agent browser tool. Installed once into a
+#     shared path (the service runs as treegent, provisioning as root) and
+#     surfaced to the daemon via PLAYWRIGHT_BROWSERS_PATH in runtime.env.
+#     --with-deps pulls the apt libraries Chromium needs. Best-effort: a
+#     missing browser degrades the tool to a clear error, never a dead
+#     provision or a crashed agent turn.
+install -d -m 755 /var/lib/treegent/pw-browsers
+PLAYWRIGHT_BROWSERS_PATH=/var/lib/treegent/pw-browsers \\
+  uv run playwright install --with-deps chromium >/dev/null 2>&1 \\
+  || echo "[provision] WARN: chromium install failed — the browser tool will report it as unavailable"
+
 # 4) runtime-only env file (NEVER the service token; the runtime
 #    authenticates as agents with agent keys, not as the central web)
 install -d -m 755 /etc/treegent
@@ -147,6 +158,7 @@ TG_SECRETS_URL={public}/secrets
 TG_FILES_URL={public}/files
 TG_RUNTIME_BIND=127.0.0.1
 TG_RUNTIME_PORT=8010
+PLAYWRIGHT_BROWSERS_PATH=/var/lib/treegent/pw-browsers
 ENVEOF
 chmod 600 /etc/treegent/runtime.env
 
@@ -296,6 +308,13 @@ $GIT checkout -q {target_sha} 2>/dev/null || $GIT reset -q --hard {target_sha}
 UV="$(command -v uv || echo /usr/local/bin/uv)"
 "$UV" sync -q
 chown -R treegent:treegent /opt/TreeGent/.venv
+# browser tool: make sure headless Chromium exists on updated hosts too
+install -d -m 755 /var/lib/treegent/pw-browsers
+PLAYWRIGHT_BROWSERS_PATH=/var/lib/treegent/pw-browsers \\
+  "$UV" run playwright install --with-deps chromium >/dev/null 2>&1 \\
+  || echo "[update] WARN: chromium install failed — the browser tool will report it as unavailable"
+grep -q PLAYWRIGHT_BROWSERS_PATH /etc/treegent/runtime.env 2>/dev/null \\
+  || echo 'PLAYWRIGHT_BROWSERS_PATH=/var/lib/treegent/pw-browsers' >> /etc/treegent/runtime.env
 systemctl restart treegent-agent.service
 echo "updated to {target_sha[:7]}"
 """

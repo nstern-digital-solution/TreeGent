@@ -17,3 +17,7 @@ deploy/*.log
 .vscode/
 web-bundle/
 deploy/.caddy-lab
+
+# browser tool (agent browser profile — workspaces live outside the repo,
+# but never let one land here if a workspace is ever pointed inside)
+browser-profile/
