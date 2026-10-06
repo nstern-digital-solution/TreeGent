@@ -134,6 +134,13 @@ async def call_provider(provider_doc: dict, model_id: str, job: dict) -> dict:
         "Authorization": f"Bearer {provider_key(provider_doc)}",
         "Content-Type": "application/json",
     }
+    # OpenCode gateways (Go/Zen) require a stable session id + an honest
+    # client UA since 2026-09-05; an agent's life IS one conversation, so
+    # agent_id is the stable routing/caching identity.
+    if "opencode.ai" in base:
+        headers["x-opencode-session"] = f"tg-{job.get('agent_id', 'anon')}"
+        headers["x-opencode-client"] = "treegent"
+        headers["User-Agent"] = "treegent/1.0"
     payload = {
         "model": model_id.split("/", 1)[1],
         "messages": job["messages"],
