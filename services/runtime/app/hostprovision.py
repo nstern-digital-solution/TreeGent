@@ -117,7 +117,7 @@ chown -R treegent:treegent /opt/TreeGent
 # 4) runtime-only env file (NEVER the service token; the runtime
 #    authenticates as agents with agent keys, not as the central web)
 install -d -m 755 /etc/treegent
-cat > /etc/treegent/runtime.env <<ENVEOF
+cat > /etc/treegent/runtime.env <<'ENVEOF'
 TG_MONGO_URL={mongo}
 TG_RUNTIME_HOST_ID={host_id}
 TG_RUNTIME_EXEC_ENABLED=true

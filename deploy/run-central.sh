@@ -16,6 +16,11 @@ mkdir -p "$LOGDIR"
 declare -A PID CMD LOG STARTS BACKOFF NEXT_RETRY LAST_START
 ORDER=()
 
+# propagate shared env to children (systemd EnvironmentFile vars are NOT inherited
+# by grandchildren unless exported — this bug baked 127.0.0.1 URLs into agent hosts
+# at provision time because the runtime read TG_PUBLIC_URL with a silent fallback)
+export TG_MONGO_URL TG_PUBLIC_URL TG_SERVICE_TOKEN TG_MAIL_DOMAIN 2>/dev/null || true
+
 now() { date +%s; }
 
 spawn() { # spawn <name> — first call launches; later calls mark dead + schedule retry
