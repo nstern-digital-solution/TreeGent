@@ -13,11 +13,18 @@ class Settings(BaseSettings):
     port: int = 8010
     service_token: str = Field(default="dev-service-token",
                             validation_alias=AliasChoices("TG_RUNTIME_SERVICE_TOKEN", "TG_SERVICE_TOKEN"))
-    chat_url: str = "http://127.0.0.1:8000"
-    proxy_url: str = "http://127.0.0.1:8001"
-    mail_url: str = "http://127.0.0.1:8002"
-    secrets_url: str = "http://127.0.0.1:8003"
-    files_url: str = "http://127.0.0.1:8004"
+    # shared names (TG_CHAT_URL...) as written by provisioning; the
+    # TG_RUNTIME_-prefixed forms keep working too
+    chat_url: str = Field(default="http://127.0.0.1:8000",
+                      validation_alias=AliasChoices("TG_RUNTIME_CHAT_URL", "TG_CHAT_URL"))
+    proxy_url: str = Field(default="http://127.0.0.1:8001",
+                      validation_alias=AliasChoices("TG_RUNTIME_PROXY_URL", "TG_PROXY_URL"))
+    mail_url: str = Field(default="http://127.0.0.1:8002",
+                      validation_alias=AliasChoices("TG_RUNTIME_MAIL_URL", "TG_MAIL_URL"))
+    secrets_url: str = Field(default="http://127.0.0.1:8003",
+                      validation_alias=AliasChoices("TG_RUNTIME_SECRETS_URL", "TG_SECRETS_URL"))
+    files_url: str = Field(default="http://127.0.0.1:8004",
+                      validation_alias=AliasChoices("TG_RUNTIME_FILES_URL", "TG_FILES_URL"))
     # agent workspaces root (the mounted share lives under here)
     workspace_root: str = os.path.expanduser("~/treegent-workspaces")
     heartbeat_s: int = 3600            # R44: default 60 min, per-agent override

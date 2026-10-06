@@ -1,6 +1,11 @@
 import asyncio
+import sys
 
 from fastapi import FastAPI, Header, HTTPException
+
+# supervisor prints must reach journald (systemd pipes stdout; python buffers)
+for _s in (sys.stdout, sys.stderr):
+    _s.reconfigure(line_buffering=True)
 
 from .config import client, db, settings
 from .loop import supervise
