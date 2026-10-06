@@ -151,7 +151,8 @@ RestartSec=5
 WantedBy=multi-user.target
 UNITEOF
 systemctl daemon-reload
-systemctl enable --now treegent-agent.service
+systemctl enable treegent-agent.service
+systemctl restart treegent-agent.service   # enable --now is a NO-OP on a running unit — re-provision must actually restart it
 
 echo "[provision] done — treegent-agent.service active"
 """
