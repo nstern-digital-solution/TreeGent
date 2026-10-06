@@ -211,6 +211,15 @@ before guessing parameters. Prefer the narrow tool over the broad one
     async def run_turn(self, trigger: str) -> None:
         """One turn: injections -> loop of (generation via proxy, tool
         execution) until the model responds without tool calls."""
+        try:
+            await self._run_turn_inner(trigger)
+        except Exception as e:  # noqa: BLE001
+            print(f"[turn] {self.name} CRASHED: {type(e).__name__}: "
+                  f"{str(e)[:300]}")
+        finally:
+            self.busy = False
+
+    async def _run_turn_inner(self, trigger: str) -> None:
         self.busy = True
         turn_id = f"trn_{os.urandom(6).hex()}"
         started = now()
@@ -315,7 +324,6 @@ before guessing parameters. Prefer the narrow tool over the broad one
                 break
         finally:
             self.last_turn_end = now()
-            self.busy = False
             await self._save_life()
             if steps > 0:
                 await turns.insert_one({
@@ -341,6 +349,9 @@ async def supervise(state_registry: dict | None = None) -> None:
     """Dev-box supervisor: watch every agent actor, run their loops.
     (Fleet shape R19: per-host daemon runs this same function.)"""
     agents: dict[str, Agent] = {}
+    own = settings.host_id if settings.host_id else None
+    print(f"[supervisor] starting — "
+          f"{'host ' + own if own else 'CENTRAL (unassigned agents)'}")
 
     async def ensure_agents():
         # R53: agent hosts claim ONLY their agents (actor.host_id);
@@ -366,7 +377,11 @@ async def supervise(state_registry: dict | None = None) -> None:
     if state_registry is not None:
         _sync_state(state_registry, agents)
     while True:
-        await ensure_agents()   # picks up new agents created later
+        try:
+            await ensure_agents()   # picks up new agents created later
+        except Exception as e:  # noqa: BLE001
+            print(f"[supervisor] agent scan failed: {type(e).__name__}: {e}")
+            await asyncio.sleep(10)
         if state_registry is not None:
             _sync_state(state_registry, agents)
         for aid, agent in list(agents.items()):
