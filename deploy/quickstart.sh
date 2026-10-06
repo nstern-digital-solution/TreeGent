@@ -237,7 +237,7 @@ fi
 say "starting TreeGent"
 systemctl enable treegent >/dev/null 2>&1 || true
 # operator CLI: `treegent status` / `treegent update` from anywhere
-install -m 0755 "$REPO/deploy/treegent-cli.sh" /usr/local/bin/treegent \
+install -m 0755 /opt/TreeGent/deploy/treegent-cli.sh /usr/local/bin/treegent \
   || echo "[quickstart] WARN: could not install treegent CLI"
 # restart (not just enable --now): re-runs MUST activate freshly pulled code;
 # enable --now alone is a no-op on an already-running unit

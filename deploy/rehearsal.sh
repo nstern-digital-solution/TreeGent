@@ -172,6 +172,25 @@ else
   echo "  SKIP: no caddy binary (websocket-forwarding untested this run)"
 fi
 
+# ---------- 4b. quickstart tail under set -u (unbound-variable class) ----------
+# shipped once (2026-10-06: $REPO unbound killed the deploy BEFORE the service
+# restart). This check executes the install/restart tail verbatim with stubs,
+# so any future unbound variable fails HERE, not on the operator's server.
+if bash -c '
+set -uo pipefail
+systemctl() { :; }; install() { :; }
+say() { :; }
+PROXY=caddy TG_DOMAIN=x
+systemctl enable treegent >/dev/null 2>&1 || true
+install -m 0755 /opt/TreeGent/deploy/treegent-cli.sh /usr/local/bin/treegent \
+  || echo "warn"
+systemctl restart treegent
+' 2>/tmp/qs-tail-err; then
+  ok "quickstart tail runs clean under set -u"
+else
+  bad "quickstart tail unbound variable: $(cat /tmp/qs-tail-err | head -1)"
+fi
+
 # ---------- 5. verdict ----------
 echo
 echo "== verdict: $PASS passed, $FAIL failed =="
