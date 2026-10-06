@@ -17,6 +17,14 @@ from .config import settings, turns
 WAKE_POLL_S = 5
 
 
+def _cdb():
+    """Central-mode Mongo handle. Imported lazily: hosted mode (host_key
+    set) has NO client and must never touch this."""
+    from .config import db as _db
+    assert _db is not None, "central path used in hosted mode (bug)"
+    return _db
+
+
 def _hosted() -> bool:
     """R56: hosted runtimes carry a host key and NO Mongo credentials."""
     return bool(settings.host_key)
@@ -154,8 +162,7 @@ before guessing parameters. Prefer the narrow tool over the broad one
             self._regen_system_prompt()
             self._life_loaded = True
             return
-        from .config import db
-        doc = await db.agent_sessions.find_one({"_id": self.id})
+        doc = await _cdb().agent_sessions.find_one({"_id": self.id})
         if doc and doc.get("messages"):
             self.messages = doc["messages"]
             # R50: the system message is regenerated from current code +
@@ -174,8 +181,7 @@ before guessing parameters. Prefer the narrow tool over the broad one
             from . import hostclient
             hostclient.save_messages(self.workspace, self.messages)
             return
-        from .config import db
-        await db.agent_sessions.update_one(
+        await _cdb().agent_sessions.update_one(
             {"_id": self.id},
             {"$set": {"messages": self.messages,
                       "updated_at": now(),
@@ -200,13 +206,13 @@ before guessing parameters. Prefer the narrow tool over the broad one
             lines.append(f"You have a new message from {sender} "
                          f"received at {ts}: {body}")
         # 2) unconsumed wake events of other kinds
-        wakes = [w async for w in db.wake_events.find(
+        wakes = [w async for w in _cdb().wake_events.find(
             {"agent_id": self.id, "consumed": False,
              "reason": {"$in": ["mail", "approval", "approval-rejected"]}})
             .sort("created_at", 1).limit(10)]
         for w in wakes:
             if w["reason"] == "mail":
-                mail = await db.mail_messages.find_one(
+                mail = await _cdb().mail_messages.find_one(
                     {"_id": w.get("mail_message_id")})
                 if mail:
                     lines.append(
@@ -259,12 +265,12 @@ before guessing parameters. Prefer the narrow tool over the broad one
                                     self._pending_wake_ids)
             self._pending_inbox_ids, self._pending_wake_ids = [], []
             return
-        wakes = [w async for w in db.wake_events.find(
+        wakes = [w async for w in _cdb().wake_events.find(
             {"agent_id": self.id, "consumed": False,
              "reason": {"$in": ["mail", "approval", "approval-rejected"]}})
             .sort("created_at", 1).limit(20)]
         for w in wakes:
-            await db.wake_events.update_one({"_id": w["_id"]},
+            await _cdb().wake_events.update_one({"_id": w["_id"]},
                                             {"$set": {"consumed": True}})
         await self.svcs._call(settings.chat_url,
                               "/internal/agent-inbox-delivered",
@@ -274,8 +280,7 @@ before guessing parameters. Prefer the narrow tool over the broad one
         if self.hc is not None:
             interval = settings.heartbeat_s
         else:
-            from .config import db
-            doc = await db.agents_runtime.find_one({"_id": self.id}) or {}
+            doc = await _cdb().agents_runtime.find_one({"_id": self.id}) or {}
             interval = doc.get("heartbeat_s", settings.heartbeat_s)  # R44
         elapsed = (now() - self.last_turn_end).total_seconds()
         return elapsed >= interval and not self.busy
@@ -307,7 +312,7 @@ before guessing parameters. Prefer the narrow tool over the broad one
                 if not injections:
                     return
             elif trigger == "heartbeat":
-                interval = (await db.agents_runtime.find_one(
+                interval = (await _cdb().agents_runtime.find_one(
                     {"_id": self.id}) or {}).get(
                         "heartbeat_s", settings.heartbeat_s)
                 injections = [f"Heartbeat: {interval // 60} minutes elapsed "
@@ -464,8 +469,7 @@ async def supervise(state_registry: dict | None = None) -> None:
                 agents.pop(aid)
             return
         # central path (unchanged): claim unassigned keyed agents
-        from .config import db
-        async for a in db.actors.find({"kind": "agent"}):
+        async for a in _cdb().actors.find({"kind": "agent"}):
             if a["_id"] in agents:
                 continue
             a_host = a.get("host_id") or None  # '' == unassigned
@@ -473,7 +477,7 @@ async def supervise(state_registry: dict | None = None) -> None:
                 continue
             if not own and a_host:
                 continue
-            key_doc = await db.agent_keys.find_one(
+            key_doc = await _cdb().agent_keys.find_one(
                 {"agent_id": a["_id"], "revoked": {"$ne": True}})
             if not key_doc:
                 print(f"[supervisor] no key for {a.get('username')} — skipped")
@@ -486,10 +490,9 @@ async def supervise(state_registry: dict | None = None) -> None:
             p = await HOST.pending(agent.id)
             return bool(p.get("inbox")) or bool(p.get("wakes")) \
                 or bool(p.get("mail_pending"))
-        from .config import db
-        has_event = await db.wake_events.find_one(
+        has_event = await _cdb().wake_events.find_one(
             {"agent_id": agent.id, "consumed": False})
-        inbox_row = await db.inbox.find_one(
+        inbox_row = await _cdb().inbox.find_one(
             {"recipient_id": agent.id, "delivered_at": None})
         return bool(has_event or inbox_row)
 

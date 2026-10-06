@@ -11,7 +11,11 @@ class Settings(BaseSettings):
     db_name: str = "treegent"
     bind_host: str = "127.0.0.1"
     port: int = 8010
-    service_token: str = Field(default="dev-service-token",
+    # R56: EMPTY default. The central box sets TG_SERVICE_TOKEN (from its env);
+    # agent hosts set only their per-host runtime token — and that token is for
+    # the daemon's OWN /internal API, NOT for calling chat (chat uses host keys).
+    # So on an agent host this stays "" and no service header is ever sent.
+    service_token: str = Field(default="",
                             validation_alias=AliasChoices("TG_RUNTIME_SERVICE_TOKEN", "TG_SERVICE_TOKEN"))
     # shared names (TG_CHAT_URL...) as written by provisioning; the
     # TG_RUNTIME_-prefixed forms keep working too

@@ -23,9 +23,15 @@ class Services:
     async def _call(self, base: str, path: str, method: str = "GET",
                     body: dict | None = None, params: dict | None = None,
                     timeout: float = 60.0) -> dict:
-        # R45: the agent key IS the credential; services derive identity
-        # from it. No shared token, no claimed actor id.
+        # R45: the agent key IS the agent-tier credential. The shared
+        # service token rides along ONLY when the runtime itself runs on
+        # the trusted central box (settings.service_token is empty on
+        # agent hosts — provisioning writes none), letting central-mode
+        # calls reach service-tier endpoints (inbox polling). On agent
+        # hosts the header is absent and R56 host-tier endpoints are used.
         headers = {"X-Agent-Key": self.key}
+        if settings.service_token:
+            headers["X-Service-Token"] = settings.service_token
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.request(method, f"{base}{path}", headers=headers,
                                 json=body, params=params)
