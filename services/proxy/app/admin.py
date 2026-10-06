@@ -46,7 +46,9 @@ async def upsert_provider(name: str, body: ProviderIn,
     doc = {"kind": body.kind, "base_url": body.base_url.rstrip("/"),
            "key_env": body.key_env, "enabled": body.enabled}
     if body.key:
-        doc["key_enc"] = encrypt_key(body.key)
+        # strip whitespace: a pasted trailing newline yields "Invalid
+        # credential" upstream while the key itself is perfectly valid
+        doc["key_enc"] = encrypt_key(body.key.strip())
     await db.providers.update_one({"_id": name}, {"$set": doc}, upsert=True)
     return {"id": name, "ready": name in await dispatcher.ready_providers()}
 

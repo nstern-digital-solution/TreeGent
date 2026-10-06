@@ -36,7 +36,7 @@ def provider_key(provider_doc: dict) -> str:
         from .keyvault import decrypt_key
         k = decrypt_key(enc)
         if k:
-            return k
+            return k.strip()   # legacy rows: tolerate pasted whitespace
     name = (provider_doc.get("_id") or "").upper().replace("-", "_")
     return env_fallback(f"TG_PROXY_KEY_{name}") or env_fallback(
         provider_doc.get("key_env", ""))
