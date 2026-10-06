@@ -63,6 +63,21 @@ async def host_agents(host: dict = Depends(_host)):
     return {"agents": out, "now": idgen.now()}
 
 
+@router.get("/messages/{agent_id}")
+async def host_messages(agent_id: str, sender: str | None = None,
+                        unread: str = "true", read: str = "true",
+                        since: str | None = None, limit: int = 20,
+                        host: dict = Depends(_host)):
+    """chat.check for hosted agents (host-key auth): own inbox with
+    sender/unread/since/limit filters; marks results delivered (seen)."""
+    from .internal import _flag, _fetch_agent_messages   # shared logic
+    await _own_agent(host, agent_id)
+    return await _fetch_agent_messages(
+        agent_id, sender=sender,
+        unread=_flag(unread), read=_flag(read),
+        since=since, limit=limit)
+
+
 @router.get("/pending/{agent_id}")
 async def host_pending(agent_id: str, host: dict = Depends(_host)):
     """Undelivered inbox rows + unconsumed wakes for ONE own agent."""

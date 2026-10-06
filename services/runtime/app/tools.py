@@ -56,10 +56,12 @@ def safe_ws_path(workspace: str, rel: str) -> str:
 # ---------------- tool implementations ----------------
 
 class ToolContext:
-    def __init__(self, agent_id: str, workspace: str, svcs: Services):
+    def __init__(self, agent_id: str, workspace: str, svcs: Services,
+                 host_client=None):
         self.agent_id = agent_id
         self.workspace = workspace
         self.svcs = svcs
+        self.host_client = host_client   # hosted mode: host-tier client
 
 
 
@@ -83,6 +85,42 @@ async def t_chat_send(ctx: ToolContext, args: dict) -> str:
         f"/conversations/{conv['id']}/messages",
         "POST", body={"body": body})
     return f"sent to {to}"
+
+
+async def t_chat_check(ctx: ToolContext, args: dict) -> str:
+    """Read inbox messages. Filters (all optional): sender=<username>,
+    unread=<bool>, since=<ts>, limit=<int>. Default: newest 20, any state."""
+    params = {"agent_id": ctx.agent_id}
+    if args.get("sender"):
+        params["sender"] = str(args["sender"])
+    unread = args.get("unread")
+    read = args.get("read")
+    # default: both states
+    params["unread"] = "true" if unread in (None, True) else "false"
+    params["read"] = "true" if read in (None, True) else "false"
+    if args.get("since"):
+        params["since"] = str(args["since"])
+    try:
+        params["limit"] = str(max(1, min(int(args.get("limit", 20)), 100)))
+    except (TypeError, ValueError):
+        params["limit"] = "20"
+    # hosted runtimes have no service token — their chat.check rides the
+    # host-tier API (X-Host-Id/X-Host-Key auth)
+    hc = getattr(ctx, "host_client", None)
+    if hc is not None:
+        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        from urllib.parse import quote
+        r = await hc._call(
+            "GET", f"/internal/host/messages/{quote(ctx.agent_id)}?{qs}")
+    else:
+        r = await ctx.svcs._call(settings.chat_url, "/internal/agent-messages",
+                                 params=params)
+    msgs = r.get("messages", [])
+    if not msgs:
+        return "no messages matching the filter"
+    return "\n".join(
+        f"[{m.get('received_at', '')}] {m.get('sender_username', '?')}: "
+        f"{m.get('body', '')}" for m in msgs)
 
 
 async def t_mail_send(ctx: ToolContext, args: dict) -> str:
@@ -288,6 +326,7 @@ async def t_memory_write(ctx: ToolContext, args: dict) -> str:
 
 TOOLS: dict = {
     "chat.send": t_chat_send,
+    "chat.check": t_chat_check,
     "mail.send": t_mail_send,
     "mail.check": t_mail_check,
     "approvals.decide": t_approval_decide,
@@ -310,6 +349,16 @@ TOOL_SCHEMAS = [
         "parameters": {"type": "object", "properties": {
             "to": {"type": "string"}, "body": {"type": "string"},
             "required": ["to", "body"]}}},
+    {
+        "name": "chat.check",
+        "description": "read your inbox messages. Notifications only tell you "
+                       "messages exist; this returns actual content. Filters: "
+                       "sender, unread, since, limit.",
+        "parameters": {"type": "object", "properties": {
+            "sender": {"type": "string", "description": "filter by sender username"},
+            "unread": {"type": "boolean", "description": "only unread (default any)"},
+            "since": {"type": "string", "description": "ISO timestamp lower bound"},
+            "limit": {"type": "integer", "description": "max messages (default 20)"}}}},
     {
         "name": "mail.send", "description": "send email (ALWAYS approval-gated by your superior)",
         "parameters": {"type": "object", "properties": {

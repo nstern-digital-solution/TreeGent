@@ -201,12 +201,12 @@ before guessing parameters. Prefer the narrow tool over the broad one
         inbox = await self.svcs._call(
             settings.chat_url, "/internal/agent-inbox",
             params={"agent_id": self.id})
-        for m in inbox.get("messages", [])[:10]:
-            ts = m.get("received_at", "")
-            sender = m.get("sender_username", "?")
-            body = m.get("body", "")
-            lines.append(f"You have a new message from {sender} "
-                         f"received at {ts}: {body}")
+        n = len(inbox.get("messages", []))
+        if n:
+            # R14 verbatim: notification only — the agent pulls content via
+            # chat.check (async messaging; bodies never ride in context)
+            lines.append(f"You have {n} new message(s) waiting — use "
+                         "chat.check to read them.")
         # 2) unconsumed wake events of other kinds
         wakes = [w async for w in _cdb().wake_events.find(
             {"agent_id": self.id, "consumed": False,
@@ -238,10 +238,14 @@ before guessing parameters. Prefer the narrow tool over the broad one
         """R56: fetch pending work via the host-tier API only."""
         p = await self.hc.pending(self.id)
         lines = []
-        for m in p.get("inbox", []):
-            lines.append(f"You have a new message from "
-                         f"{m['sender_username']} received at "
-                         f"{m.get('ts', '')}: {m['body']}")
+        inbox = p.get("inbox", [])
+        if inbox:
+            # R14 verbatim: notification only (async) — chat.check fetches
+            senders = sorted({m.get("sender_username", "?") for m in inbox})
+            lines.append(f"You have {len(inbox)} new message(s) from "
+                         f"{', '.join(senders)} — use chat.check to read "
+                         "them.")
+        for m in inbox:
             self._pending_inbox_ids.append(m["inbox_id"])
         for w in p.get("wakes", []):
             reason = w.get("reason")
@@ -467,7 +471,8 @@ before guessing parameters. Prefer the narrow tool over the broad one
         f = T.TOOLS.get(fn)
         if not f:
             return f"ERROR: unknown tool {fn}"
-        ctx = T.ToolContext(self.id, self.workspace, self.svcs)
+        ctx = T.ToolContext(self.id, self.workspace, self.svcs,
+                            host_client=self.hc)
         try:
             return await f(ctx, args)
         except Exception as e:  # noqa: BLE001
