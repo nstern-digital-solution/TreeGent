@@ -66,40 +66,53 @@ async def _fetch_agent_messages(agent_id: str, sender: str | None,
     q: dict = {"recipient_id": agent_id}
     if not (unread or read):
         return {"messages": []}
+    # TWO lifecycle stages (R58b): delivered_at = notification acked by the
+    # runtime turn; seen_at = content actually PULLED via chat.check. The
+    # unread filter keys on seen_at — the turn's ack must not mark a
+    # message "read" before the agent has ever seen its body.
     if unread and not read:
-        q["delivered_at"] = None
+        q["seen_at"] = None
     elif read and not unread:
-        q["delivered_at"] = {"$ne": None}
+        q["seen_at"] = {"$ne": None}
     if sender:
         s = await db.actors.find_one({"username": sender}, {"_id": 1})
         if not s:
             return {"messages": []}
         q["sender_id"] = s["_id"]
     cur = db.inbox.find(q).sort("received_at", -1).limit(max(1, min(limit, 100)))
+    # NOTE: rows WITHOUT the message body join are useless; fetch bodies+sender
     out = []
     async for row in cur:
         msg = await db.messages.find_one({"_id": row["message_id"]})
         if not msg:
             continue
-        if since and (row.get("received_at") or "") < since:
-            continue
+        if since:
+            ra = row.get("received_at")
+            ra_s = ra.isoformat() if hasattr(ra, "isoformat") else str(ra or "")
+            if ra_s < since:
+                continue
         sname = (await db.actors.find_one(
             {"_id": msg["sender_id"]})) if sender is None else None
         out.append({"message_id": msg["_id"],
                     "sender_username": (sname or {}).get("username", "?")
                     if sname else sender or "?",
                     "body": msg.get("body", ""),
-                    "received_at": row.get("received_at"),
-                    "delivered": bool(row.get("delivered_at"))})
-    # the agent has now SEEN these — mark delivered (async contract: the
-    # notification was already injected; content retrieval completes it)
-    ids = [row["_id"] for row in
-           await db.inbox.find(q).sort("received_at", -1)
-           .limit(max(1, min(limit, 100))).to_list(None)]
+                    "received_at": (row["received_at"].isoformat()
+                                    if hasattr(row.get("received_at"),
+                                               "isoformat")
+                                    else row.get("received_at")),
+                    "delivered": bool(row.get("delivered_at")),
+                    "seen": bool(row.get("seen_at"))})
+    # the agent has now SEEN these bodies — mark seen_at only. The
+    # notification-ack (delivered_at) stays owned by the runtime turn.
+    ids = [m["message_id"] for m in out] or [
+        row["_id"] for row in
+        await db.inbox.find(q).sort("received_at", -1)
+        .limit(max(1, min(limit, 100))).to_list(None)]
     if ids:
-        await db.inbox.update_many({"_id": {"$in": ids},
-                                    "delivered_at": None},
-                                   {"$set": {"delivered_at": idgen.now()}})
+        await db.inbox.update_many(
+            {"message_id": {"$in": ids}, "seen_at": None},
+            {"$set": {"seen_at": idgen.now()}})
     out.reverse()   # oldest first for reading
     return {"messages": out}
 
