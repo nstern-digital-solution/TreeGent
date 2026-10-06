@@ -496,15 +496,13 @@ async def supervise(state_registry: dict | None = None) -> None:
             {"recipient_id": agent.id, "delivered_at": None})
         return bool(has_event or inbox_row)
 
-    await ensure_agents()
-    if state_registry is not None:
-        _sync_state(state_registry, agents)
     while True:
         try:
-            await ensure_agents()   # picks up new agents created later
+            await ensure_agents()   # first scan AND later scans: both guarded
         except Exception as e:  # noqa: BLE001
             print(f"[supervisor] agent scan failed: {type(e).__name__}: {e}")
             await asyncio.sleep(10)
+            continue
         if state_registry is not None:
             _sync_state(state_registry, agents)
         for aid, agent in list(agents.items()):

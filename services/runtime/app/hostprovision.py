@@ -82,7 +82,12 @@ def _agenthost_script(host_id: str) -> tuple[str, str]:
     R56: no database credential is written — hosted runtimes are HTTPS
     clients of the central services.
     """
-    public = os.environ.get("TG_PUBLIC_URL", "http://127.0.0.1")
+    public = os.environ.get("TG_PUBLIC_URL", "")
+    if not public or "127.0.0.1" in public or "localhost" in public:
+        raise RuntimeError(
+            "TG_PUBLIC_URL missing or loopback — refusing to provision: "
+            "agent hosts need the real public URL (e.g. https://tree.nstern.de). "
+            "Set it in /etc/treegent/env and restart treegent.")
     # R56: hosts authenticate to chat with a per-host key; NO Mongo URL
     # ever leaves the central box again. (hash stored in agent_hosts by
     # the provision endpoint; the secret itself only in runtime.env)

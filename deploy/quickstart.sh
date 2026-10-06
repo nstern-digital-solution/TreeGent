@@ -168,7 +168,9 @@ TOKEN_FILE="$REPO_DIR/.env"
 if [ ! -f "$TOKEN_FILE" ]; then
   cp deploy/env.example "$TOKEN_FILE"
 fi
-set_kv() { sed -i "s|^$1=.*|$1=$2|" "$TOKEN_FILE"; }
+set_kv() { grep -q "^$1=" "$TOKEN_FILE" \
+  && sed -i "s|^$1=.*|$1=$2|" "$TOKEN_FILE" \
+  || echo "$1=$2" >> "$TOKEN_FILE"; }   # append-if-missing: sed alone no-ops on absent lines
 set_kv TG_SERVICE_TOKEN "$TG_SERVICE_TOKEN"
 [ -n "${TG_MONGO_URL:-}" ] && set_kv TG_MONGO_URL "$TG_MONGO_URL"
 # kill the legacy localhost default that shadowed TG_MONGO_URL for web

@@ -31,7 +31,10 @@ AGENTS_STATE: dict = {}
 
 
 async def _host_health_loop() -> None:
-    """R54: probe all hosts every 60s so status stays truthful."""
+    """R54: probe all hosts every 60s so status stays truthful.
+    Hosted runtimes have no Mongo handle — this loop is central-only."""
+    if settings.host_key:
+        return   # R56: an agent host does not monitor the fleet
     from .hostprovision import check_host_sync
     while True:
         try:
