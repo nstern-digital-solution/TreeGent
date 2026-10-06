@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 
 import httpx
@@ -339,7 +340,25 @@ BROWSER_IDLE_REAP_S = 900            # close contexts idle > 15 min
 BROWSER_TIMEOUT_MS = 30_000          # per-action cap (~30s)
 BROWSER_TEXT_CAP = 12000             # readable-text budget per read
 _BROWSERS: dict[str, dict] = {}      # workspace -> {pw, ctx, page, last_used}
-_BROWSER_LOCK = threading.Lock()     # sync Playwright: one call at a time
+# Rosa bug report 2026-10-06: the sync Playwright API is greenlet/thread-AFFINE —
+# objects must be touched ONLY from the thread that created them. A bare
+# asyncio.to_thread round-robins the pool, so every-other-call landed on the
+# wrong thread: "Cannot switch to a different thread", or worse, silently
+# "(empty page)" because _browser_state swallowed the error. Fix: ONE
+# dedicated executor thread per workspace, for the context's lifetime.
+_BROWSER_EXECS: dict[str, ThreadPoolExecutor] = {}
+
+
+def _browser_exec(workspace: str) -> ThreadPoolExecutor:
+    """The single thread this workspace's browser lives on."""
+    ex = _BROWSER_EXECS.get(workspace)
+    if ex is None:
+        ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tg-browse")
+        _BROWSER_EXECS[workspace] = ex
+    return ex
+
+
+_BROWSER_LOCK = threading.Lock()     # guards _BROWSERS/_BROWSER_EXECS dicts only
 
 
 def _browser_reap() -> None:
@@ -352,6 +371,9 @@ def _browser_reap() -> None:
             _BROWSERS.pop(ws)["pw"].stop()
         except Exception:  # noqa: BLE001 — best-effort cleanup
             pass
+        ex = _BROWSER_EXECS.pop(ws, None)
+        if ex is not None:
+            ex.shutdown(wait=False)
 
 
 import atexit
@@ -365,21 +387,19 @@ def _browser_shutdown() -> None:
                 _BROWSERS.pop(ws)["pw"].stop()
             except Exception:  # noqa: BLE001
                 pass
+            ex = _BROWSER_EXECS.pop(ws, None)
+            if ex is not None:
+                ex.shutdown(wait=False)
 
 
 atexit.register(_browser_shutdown)
 
 
 def _browser_state(page) -> str:
-    """Small state dump after an action: where we are + readable text."""
-    try:
-        title = page.title()
-    except Exception:  # noqa: BLE001
-        title = "(no title)"
-    try:
-        text = page.locator("body").inner_text(timeout=5000)
-    except Exception:  # noqa: BLE001
-        text = ""
+    """Small state dump after an action: where we are + readable text.
+    A broken session must surface as ERROR — never '(empty page)'."""
+    title = page.title()
+    text = page.locator("body").inner_text(timeout=5000)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()[:BROWSER_TEXT_CAP]
     return (f"url: {page.url}\ntitle: {title}\n\n{text or '(empty page)'}")
 
@@ -481,6 +501,9 @@ def _sync_browser_action(workspace: str, action: str, args: dict) -> str:
                 state["pw"].stop()
             finally:
                 _BROWSERS.pop(workspace, None)
+                ex = _BROWSER_EXECS.pop(workspace, None)
+                if ex is not None:
+                    ex.shutdown(wait=False)
             return "browser closed"
         return (f"ERROR: unknown browser action {action!r} — use open, text, "
                 f"click, type, screenshot or close")
@@ -498,8 +521,9 @@ async def t_browser(ctx: ToolContext, args: dict) -> str:
         # blocking Playwright work stays off the async loop; 45s hard backstop
         # above the ~30s per-action Playwright timeouts
         return await asyncio.wait_for(
-            asyncio.to_thread(_sync_browser_action, ctx.workspace,
-                              action, args),
+            asyncio.get_event_loop().run_in_executor(
+                _browser_exec(ctx.workspace), _sync_browser_action,
+                ctx.workspace, action, args),
             timeout=45)
     except asyncio.TimeoutError:
         return "ERROR: browser action timed out (45s)"
