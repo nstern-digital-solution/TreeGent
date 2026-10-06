@@ -15,6 +15,7 @@ one line per message. The old TG_MONGO_URL path is gone.
 from __future__ import annotations
 
 import json
+import sys
 import os
 from pathlib import Path
 
@@ -108,7 +109,23 @@ def _sanitize(messages: list[dict], max_messages: int = 200) -> list[dict]:
                 continue        # duplicate delivery (re-ack race / spin)
             seen_users.add(content)
         out.append(m)
-    return out[-max_messages:]
+    tail = out[-max_messages:]
+    # Context budget: cap TOTAL chars so accumulation without compaction
+    # can't explode again. The SYSTEM prompt is never elided; the rest is
+    # trimmed oldest-first until the non-system content fits the budget.
+    budget = 160_000   # chars (~40k tokens) — generous, but bounded
+    system = [m for m in tail if m.get("role") == "system"]
+    body = [m for m in tail if m.get("role") != "system"]
+    syslen = sum(len(m.get("content") or "") for m in system)
+    while (sum(len(m.get("content") or "") for m in body)
+           + syslen) > budget and len(body) > 2:
+        body = body[1:]
+    kept = system[:1] + body   # one system prompt, then conversation
+    if len(kept) < len(tail):
+        dropped = len(tail) - len(kept)
+        print("[context budget] dropped %d oldest message(s) to fit %d chars"
+              % (dropped, budget), file=sys.stderr)
+    return kept
 
 
 def load_messages(workspace: str) -> list[dict]:
