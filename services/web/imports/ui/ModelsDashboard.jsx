@@ -145,7 +145,7 @@ function CatalogTab() {
         default to task/rank 0 — promote and rank the ones you trust.
       </p>
       <table className="usage-table">
-        <thead><tr><th>Model</th><th>Desig.</th><th>Rank</th><th>Input modalities</th><th>Context</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Model</th><th>Desig.</th><th title="Higher rank = tried FIRST by the dispatcher (descending). Failover to lower ranks only on failure.">Rank ↓ (highest first)</th><th>Input modalities</th><th>Context</th><th>Actions</th></tr></thead>
         <tbody>
           {models.map((m) => {
             const des = m.designations || [];
