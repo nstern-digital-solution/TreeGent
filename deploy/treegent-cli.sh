@@ -77,8 +77,18 @@ cmd_status() {
   exit 0
 }
 
+# locate tools the way installers placed them (non-login shells lack them)
+find_tools() {
+  UV_BIN="$(command -v uv || true)"
+  [ -z "$UV_BIN" ] && [ -x /root/.local/bin/uv ] && UV_BIN=/root/.local/bin/uv
+  [ -z "$UV_BIN" ] && [ -x /home/treegent/.local/bin/uv ] && UV_BIN=/home/treegent/.local/bin/uv
+  METEOR_BIN="$(command -v meteor || true)"
+  [ -z "$METEOR_BIN" ] && [ -x /home/treegent/.meteor/meteor ] && METEOR_BIN=/home/treegent/.meteor/meteor
+}
+
 cmd_update() {
   need_repo
+  find_tools
   say "== TreeGent update =="
 
   say "1/5 git pull"
@@ -88,11 +98,26 @@ cmd_update() {
   fi
 
   say "2/5 deps (uv sync)"
-  (cd "$REPO" && uv sync 2>&1 | tail -2 | sed 's/^/    /') || true
+  if [ -n "$UV_BIN" ]; then
+    (cd "$REPO" && "$UV_BIN" sync 2>&1 | tail -2 | sed 's/^/    /') \
+      || { err "uv sync failed — see above; refusing to continue"; exit 1; }
+  else
+    err "uv not found (looked in PATH, /root/.local/bin, /home/treegent/.local/bin)"
+    err "deps NOT updated — install uv (curl -LsSf https://astral.sh/uv/install.sh | sh)"
+    exit 1
+  fi
 
   say "3/5 web bundle"
-  (cd "$REPO/services/web" && meteor npm install --silent 2>/dev/null | tail -1 \
-     && meteor build --directory "$REPO/web-bundle" 2>&1 | tail -2 | sed 's/^/    /') || true
+  if [ -n "$METEOR_BIN" ]; then
+    (cd "$REPO/services/web" \
+       && "$METEOR_BIN" npm install --silent 2>/dev/null \
+       && "$METEOR_BIN" build --directory "$REPO/web-bundle" 2>&1 | tail -2 | sed 's/^/    /') \
+      || { err "web bundle build failed — web UI is now STALE; refusing to continue"; exit 1; }
+  else
+    err "meteor not found (looked in PATH, /home/treegent/.meteor)"
+    err "web bundle NOT rebuilt — web UI would be stale; refusing to continue"
+    exit 1
+  fi
 
   say "4/5 restart treegent"
   if systemctl restart treegent; then
