@@ -5,6 +5,9 @@ import { Actors } from '../collections.js';
 import { RuntimeTurns } from '../coreCollections.js';
 import { AgentTranscripts } from '../collections.js';
 
+// turn timestamps may be ISO strings (new rows) or Mongo Dates (legacy) — normalize
+const iso = (v) => (v instanceof Date ? v.toISOString() : (v || ''));
+
 const call = (path, method, body, asActorId) =>
   Meteor.callAsync('runtime.api', path, method, body, asActorId);
 
@@ -58,21 +61,24 @@ export function AgentsPane() {
           </thead>
           <tbody>
             {turns.map((t) => (
-              <React.Fragment key={t.id}>
-                <tr className="clickable-row" onClick={() => setExpanded(expanded === t.id ? null : t.id)}>
-                  <td>{t.started ? new Date(t.started).toLocaleTimeString() : ''}</td>
+              <React.Fragment key={t._id}>
+                <tr className="clickable-row" onClick={() => setExpanded(expanded === t._id ? null : t._id)}>
+                  <td>{t.started ? new Date(iso(t.started)).toLocaleTimeString() : ''}</td>
                   <td>{t.trigger}</td>
                   <td>{t.steps}</td>
                   <td>{(t.final || '').slice(0, 120) || <span className="muted">—</span>}</td>
                 </tr>
-                {expanded === t.id && (
+                {expanded === t._id && (
                   <tr className="detail-row">
                     <td colSpan={4}>
                       <div className="mono-block">
                         <div className="muted small">session log — messages and tool calls this turn</div>
-                        {(transcript.filter((l) => (l.ts || '') >= (t.started || '').slice(0, 19)
-                          && (l.ts || '') <= ((t.started || '').slice(0, 11)
-                            + (t.ended ? new Date(t.ended).toISOString().slice(11, 19) : '99:99:99')))).map((l) => (
+                        {(transcript.filter((l) => {
+                          const ls = iso(t.started).slice(0, 19);
+                          const le = iso(t.ended).slice(0, 19) || '9999-12-31T23:59:59';
+                          const x = iso(l.ts).slice(0, 19);
+                          return ls <= x && x <= le;
+                        })).map((l) => (
                           <div key={l._id} className={'tr-line '
                             + (l.role === 'injection' ? 'tr-inj'
                               : l.role === 'tool' ? 'tr-tool' : 'tr-assistant')}>
