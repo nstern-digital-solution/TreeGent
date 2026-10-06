@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 
 import httpx
 
@@ -286,6 +287,146 @@ async def t_memory_write(ctx: ToolContext, args: dict) -> str:
     return SOUL.memory_append(ctx.workspace, args["text"])
 
 
+# ---------------- browser (Playwright: one persistent context per agent) -----
+# Browser-Use semantics inside one tool: open/read/click/type/screenshot/close.
+# The Chromium profile lives in <workspace>/browser-profile, so cookies and
+# logins survive across turns. Playwright is a blocking sync API — every call
+# runs in a worker thread (asyncio.to_thread) so the async loop never blocks,
+# serialized by a lock because sync-API objects are not thread-safe.
+# Missing Chromium (e.g. the central box, where agent hosts are provisioned
+# separately) degrades to a clear error string — never a crashed turn.
+
+BROWSER_TIMEOUT_MS = 30_000          # per-action cap (~30s)
+BROWSER_TEXT_CAP = 12000             # readable-text budget per read
+_BROWSERS: dict[str, dict] = {}      # workspace -> {pw, ctx, page}
+_BROWSER_LOCK = threading.Lock()     # sync Playwright: one call at a time
+
+
+def _browser_state(page) -> str:
+    """Small state dump after an action: where we are + readable text."""
+    try:
+        title = page.title()
+    except Exception:  # noqa: BLE001
+        title = "(no title)"
+    try:
+        text = page.locator("body").inner_text(timeout=5000)
+    except Exception:  # noqa: BLE001
+        text = ""
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()[:BROWSER_TEXT_CAP]
+    return (f"url: {page.url}\ntitle: {title}\n\n{text or '(empty page)'}")
+
+
+def _browser_open(workspace: str) -> dict:
+    """Launch the agent's persistent Chromium context (blocking)."""
+    from playwright.sync_api import sync_playwright
+    profile = os.path.join(workspace, "browser-profile")
+    os.makedirs(profile, exist_ok=True)
+    pw = sync_playwright().start()
+    try:
+        bctx = pw.chromium.launch_persistent_context(
+            user_data_dir=profile,
+            headless=True,
+            viewport={"width": 1280, "height": 720},
+            args=["--disable-dev-shm-usage"],
+        )
+    except Exception as e:  # noqa: BLE001 — missing browser/deps is normal
+        pw.stop()
+        msg = str(e)
+        if "Executable doesn't exist" in msg or "playwright install" in msg:
+            raise RuntimeError(
+                "browser unavailable on this host: Chromium is not "
+                "installed (run: uv run playwright install --with-deps "
+                "chromium) — agent hosts get it at provisioning time")
+        raise RuntimeError(f"browser failed to start: {msg[:300]}")
+    bctx.set_default_timeout(BROWSER_TIMEOUT_MS)
+    bctx.set_default_navigation_timeout(BROWSER_TIMEOUT_MS)
+    page = bctx.pages[0] if bctx.pages else bctx.new_page()
+    return {"pw": pw, "ctx": bctx, "page": page}
+
+
+def _sync_browser_action(workspace: str, action: str, args: dict) -> str:
+    """Blocking browser work — ONLY ever called via asyncio.to_thread."""
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        return ("ERROR: browser tool unavailable on this host: playwright "
+                "is not installed (run: uv sync / uv run playwright install "
+                "--with-deps chromium)")
+    with _BROWSER_LOCK:
+        state = _BROWSERS.get(workspace)
+        if state is None:
+            if action == "close":
+                return "no browser session open"
+            try:
+                state = _browser_open(workspace)
+            except RuntimeError as e:
+                return f"ERROR: {e}"
+            _BROWSERS[workspace] = state
+        page = state["page"]
+
+        if action == "open":
+            url = args.get("url") or ""
+            if not re.match(r"^https?://", url):
+                return "ERROR: http(s) URL required"
+            page.goto(url, wait_until="load")
+            return _browser_state(page)
+        if action == "text":
+            return _browser_state(page)
+        if action == "click":
+            sel = args.get("selector") or ""
+            if not sel:
+                return "ERROR: need 'selector'"
+            page.click(sel)
+            try:
+                page.wait_for_load_state("load", timeout=5000)
+            except Exception:  # noqa: BLE001 — SPA clicks never fire load
+                pass
+            return _browser_state(page)
+        if action == "type":
+            sel = args.get("selector") or ""
+            if not sel:
+                return "ERROR: need 'selector'"
+            if args.get("text") is None:
+                return "ERROR: need 'text'"
+            page.fill(sel, str(args["text"]))
+            return _browser_state(page)
+        if action == "screenshot":
+            rel = args.get("path") or "screenshot.png"
+            abs_p = safe_ws_path(workspace, rel)
+            os.makedirs(os.path.dirname(abs_p) or workspace, exist_ok=True)
+            page.screenshot(path=abs_p, full_page=True)
+            return (f"saved {rel} ({os.path.getsize(abs_p)} bytes) "
+                    f"in workspace")
+        if action == "close":
+            try:
+                state["ctx"].close()
+                state["pw"].stop()
+            finally:
+                _BROWSERS.pop(workspace, None)
+            return "browser closed"
+        return (f"ERROR: unknown browser action {action!r} — use open, text, "
+                f"click, type, screenshot or close")
+
+
+async def t_browser(ctx: ToolContext, args: dict) -> str:
+    """Drive the agent's headless browser. action=open|text|click|type|
+    screenshot|close. One persistent session per agent (state survives
+    across turns)."""
+    action = args.get("action") or ""
+    if action not in ("open", "text", "click", "type", "screenshot", "close"):
+        return ("ERROR: need 'action' = open | text | click | type | "
+                f"screenshot | close; got {action!r}")
+    try:
+        # blocking Playwright work stays off the async loop; 45s hard backstop
+        # above the ~30s per-action Playwright timeouts
+        return await asyncio.wait_for(
+            asyncio.to_thread(_sync_browser_action, ctx.workspace,
+                              action, args),
+            timeout=45)
+    except asyncio.TimeoutError:
+        return "ERROR: browser action timed out (45s)"
+
+
 TOOLS: dict = {
     "chat.send": t_chat_send,
     "mail.send": t_mail_send,
@@ -300,6 +441,7 @@ TOOLS: dict = {
     "ws.ls": t_ws_ls,
     "web.fetch": t_web_fetch,
     "web.search": t_web_search,
+    "browser": t_browser,
     "memory.search": t_memory_search,
     "memory.write": t_memory_write,
 }
@@ -365,6 +507,17 @@ TOOL_SCHEMAS = [
         "name": "web.search", "description": "web search (if enabled on this deployment)",
         "parameters": {"type": "object", "properties": {
             "q": {"type": "string"}, "required": ["q"]}}},
+    {
+        "name": "browser", "description": "drive a real headless browser in your workspace (persistent session: cookies/logins survive across turns). action=open (url=...) navigates and returns page state; text= current page as readable text; click (selector=...) clicks; type (selector=..., text=...) fills a form field; screenshot (path=...) saves a PNG into your workspace; close= end the session.",
+        "parameters": {"type": "object", "properties": {
+            "action": {"type": "string",
+                       "enum": ["open", "text", "click", "type",
+                                "screenshot", "close"]},
+            "url": {"type": "string", "description": "http(s) URL for action=open"},
+            "selector": {"type": "string", "description": "CSS selector for click/type"},
+            "text": {"type": "string", "description": "text to fill for action=type"},
+            "path": {"type": "string", "description": "workspace path for action=screenshot (PNG)"},
+            "required": ["action"]}}},
     {
         "name": "memory.search", "description": "search MEMORY.md and notes/*.md for a word or regex — your long-term memory in files",
         "parameters": {"type": "object", "properties": {
