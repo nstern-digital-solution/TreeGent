@@ -13,6 +13,16 @@ app = FastAPI(title="TreeGent mail", version="0.1.0")
 @app.on_event("startup")
 async def _startup() -> None:
     await ensure_indexes()
+    # R60c: the permission engine is deny-by-default and the rule rows are
+    # DATA (R40) — but nothing ever seeded them, so a FRESH deploy denied
+    # every mailbox listing (empty list, "no mailbox yet"). Seed idempotently
+    # at startup; root can still edit rows later via the permissions UI.
+    from treegent_common.perms import RULE_SEEDS
+    from .config import db as _db
+    for rule in RULE_SEEDS:
+        await _db.permissions.update_one(
+            {"_id": rule["_id"]},
+            {"$setOnInsert": rule}, upsert=True)
     # dev default: capture sink outbound until a Resend key + adapter exist
     from .config import db
     if await db.mail_adapters.count_documents({}) == 0:
