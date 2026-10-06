@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 
 import httpx
 
@@ -296,10 +297,39 @@ async def t_memory_write(ctx: ToolContext, args: dict) -> str:
 # Missing Chromium (e.g. the central box, where agent hosts are provisioned
 # separately) degrades to a clear error string — never a crashed turn.
 
+BROWSER_IDLE_REAP_S = 900            # close contexts idle > 15 min
 BROWSER_TIMEOUT_MS = 30_000          # per-action cap (~30s)
 BROWSER_TEXT_CAP = 12000             # readable-text budget per read
-_BROWSERS: dict[str, dict] = {}      # workspace -> {pw, ctx, page}
+_BROWSERS: dict[str, dict] = {}      # workspace -> {pw, ctx, page, last_used}
 _BROWSER_LOCK = threading.Lock()     # sync Playwright: one call at a time
+
+
+def _browser_reap() -> None:
+    """Close idle contexts (Rosa review #3): N agents must not mean N
+    resident Chromiums forever. Runs on every action under the lock."""
+    now = time.monotonic()
+    for ws in [w for w, s in _BROWSERS.items()
+               if now - s.get("last_used", now) > BROWSER_IDLE_REAP_S]:
+        try:
+            _BROWSERS.pop(ws)["pw"].stop()
+        except Exception:  # noqa: BLE001 — best-effort cleanup
+            pass
+
+
+import atexit
+
+
+def _browser_shutdown() -> None:
+    """Rosa review #4: daemon exit must not leak Chromium processes."""
+    with _BROWSER_LOCK:
+        for ws in list(_BROWSERS):
+            try:
+                _BROWSERS.pop(ws)["pw"].stop()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+atexit.register(_browser_shutdown)
 
 
 def _browser_state(page) -> str:
@@ -353,6 +383,7 @@ def _sync_browser_action(workspace: str, action: str, args: dict) -> str:
                 "is not installed (run: uv sync / uv run playwright install "
                 "--with-deps chromium)")
     with _BROWSER_LOCK:
+        _browser_reap()
         state = _BROWSERS.get(workspace)
         if state is None:
             if action == "close":
@@ -362,6 +393,7 @@ def _sync_browser_action(workspace: str, action: str, args: dict) -> str:
             except RuntimeError as e:
                 return f"ERROR: {e}"
             _BROWSERS[workspace] = state
+        state["last_used"] = time.monotonic()
         page = state["page"]
 
         if action == "open":
@@ -388,7 +420,15 @@ def _sync_browser_action(workspace: str, action: str, args: dict) -> str:
                 return "ERROR: need 'selector'"
             if args.get("text") is None:
                 return "ERROR: need 'text'"
-            page.fill(sel, str(args["text"]))
+            # R(rosa)#2: fill() fires no keyboard events — controlled inputs
+            # (React etc.) and keydown-driven logins silently no-op. Click the
+            # field first, clear it, then type with real key events.
+            try:
+                page.click(sel, timeout=5000)
+                page.fill(sel, "", timeout=5000)   # clear existing value
+            except Exception:  # noqa: BLE001 — some fields resist click/clear
+                pass
+            page.type(sel, str(args["text"]))
             return _browser_state(page)
         if action == "screenshot":
             rel = args.get("path") or "screenshot.png"
