@@ -165,7 +165,8 @@ before guessing parameters. Prefer the narrow tool over the broad one
             return
         doc = await _cdb().agent_sessions.find_one({"_id": self.id})
         if doc and doc.get("messages"):
-            self.messages = doc["messages"]
+            from .hostclient import _sanitize
+            self.messages = _sanitize(doc["messages"])
             # R50: the system message is regenerated from current code +
             # soul files — never trust a stale one from disk
             if self.messages and self.messages[0].get("role") == "system":

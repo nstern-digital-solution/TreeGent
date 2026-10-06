@@ -89,6 +89,28 @@ def session_path(workspace: str) -> Path:
     return p
 
 
+def _sanitize(messages: list[dict], max_messages: int = 200) -> list[dict]:
+    """Heal the failure-storm bloat: a dead provider used to leave
+    hundreds of identical user lines (re-appended unread backlogs and
+    '[generation failed]' retry stubs). Collapse runs of identical user
+    messages, drop failure stubs entirely, keep the newest tail."""
+    seen_run = None
+    out = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content") or ""
+        if role == "user" and content.startswith("[generation failed"):
+            continue    # retry noise, never real conversation
+        if role == "user":
+            if content == seen_run:
+                continue    # identical consecutive duplicate (backlog re-append)
+            seen_run = content
+        else:
+            seen_run = None
+        out.append(m)
+    return out[-max_messages:]
+
+
 def load_messages(workspace: str) -> list[dict]:
     p = session_path(workspace)
     if not p.exists():
@@ -102,7 +124,7 @@ def load_messages(workspace: str) -> list[dict]:
             out.append(json.loads(line))
         except json.JSONDecodeError:
             continue
-    return out
+    return _sanitize(out)
 
 
 def save_messages(workspace: str, messages: list[dict]) -> None:

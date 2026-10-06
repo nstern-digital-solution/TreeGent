@@ -16,6 +16,31 @@ const parseInjection = (content) => {
   return null;
 };
 
+// long content collapsed by default — one click expands
+const LongBody = ({ text, cls }) => {
+  const [open, setOpen] = useState(false);
+  const limit = 600;
+  if (!text) return null;
+  if (text.length <= limit) return <div className={cls}>{text}</div>;
+  return (
+    <div className={cls}>
+      {open ? text : `${text.slice(0, limit)}…`}
+      <button className="cl-more" onClick={() => setOpen(!open)}>
+        {open ? 'show less' : `show all (${text.length.toLocaleString()} chars)`}
+      </button>
+    </div>
+  );
+};
+
+const UserBubble = ({ p }) => (
+  <div className="cl-row cl-user">
+    <div className="cl-bubble">
+      <div className="cl-meta">{p.sender} <span className="cl-info" title={p.ts}>ⓘ</span></div>
+      <LongBody text={p.body} cls="cl-body" />
+    </div>
+  </div>
+);
+
 export function AgentsPane() {
   const actors = useTracker(() => Actors.find({}).fetch(), []);
   const agents = actors.filter((a) => a.kind === 'agent');
@@ -64,14 +89,7 @@ export function AgentsPane() {
               const p = parseInjection(l.content);
               if (p) {
                 // a message from a colleague — render as a user-style chat bubble
-                return (
-                  <div key={l._id} className="cl-row cl-user">
-                    <div className="cl-bubble">
-                      <div className="cl-meta">{p.sender} · {p.ts}</div>
-                      <div className="cl-body">{p.body}</div>
-                    </div>
-                  </div>
-                );
+                return <UserBubble key={l._id} p={p} />;
               }
               // system-ish injection (heartbeat, mail notice) — centered quiet line
               return (
@@ -86,10 +104,11 @@ export function AgentsPane() {
                 <div key={l._id} className="cl-row cl-tool">
                   <div className="cl-toolcard">
                     <div className="cl-meta">🔧 {meta.tool}
-                      {meta.args ? <code className="cl-args"> {JSON.stringify(meta.args).slice(0, 240)}</code> : null}
-                      {' '}<span className="muted">{t}</span>
+                      {meta.args ? (
+                          <span className="cl-info" title={JSON.stringify(meta.args, null, 2)}>ⓘ args</span>
+                        ) : null}
                     </div>
-                    <pre className="cl-result">{l.content}</pre>
+                    <LongBody text={l.content} cls="cl-result" />
                   </div>
                 </div>
               );
@@ -98,8 +117,8 @@ export function AgentsPane() {
             return (
               <div key={l._id} className="cl-row cl-assistant">
                 <div className="cl-bubble">
-                  <div className="cl-meta">assistant · {t}</div>
-                  <div className="cl-body">{l.content}</div>
+                  <div className="cl-meta">assistant <span className="cl-info" title={t}>ⓘ</span></div>
+                  <LongBody text={l.content} cls="cl-body" />
                 </div>
               </div>
             );

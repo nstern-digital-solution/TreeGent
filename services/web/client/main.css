@@ -113,3 +113,5 @@ table.data th, table.data td { border: 1px solid var(--border, #ccc); padding: 3
 .cl-toolcard { width: 90%; border: 1px dashed var(--border, #888); border-radius: 8px; padding: 6px 10px; background: rgba(210,153,34,.05); }
 .cl-args { font-size: 11px; }
 .cl-result { margin: 4px 0 0; font-size: 11px; white-space: pre-wrap; font-family: ui-monospace, monospace; max-height: 180px; overflow: auto; }
+.cl-info { cursor: help; opacity: .55; font-size: 11px; margin-left: 4px; }
+.cl-more { display: block; background: none; border: none; color: var(--accent, #58a6ff); font-size: 11px; cursor: pointer; padding: 2px 0; text-align: left; }
