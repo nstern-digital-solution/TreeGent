@@ -252,7 +252,10 @@ before guessing parameters. Prefer the narrow tool over the broad one
             elif reason == "approval-rejected":
                 lines.append(f"Your request {w.get('approval_id', '?')} was rejected.")
             elif reason in ("dm", "mention"):
-                pass   # the inbox rows above already carry the message
+                # the inbox rows above already carry the message content —
+                # the wake itself must still be ACKed or the supervisor
+                # retriggers forever (audit finding: permanent 5s spin)
+                self._pending_wake_ids.append(w["wake_id"])
             if reason in ("mail", "approval", "approval-rejected"):
                 self._pending_wake_ids.append(w["wake_id"])
         return lines
@@ -266,12 +269,13 @@ before guessing parameters. Prefer the narrow tool over the broad one
             self._pending_inbox_ids, self._pending_wake_ids = [], []
             return
         wakes = [w async for w in _cdb().wake_events.find(
-            {"agent_id": self.id, "consumed": False,
-             "reason": {"$in": ["mail", "approval", "approval-rejected"]}})
+            {"agent_id": self.id, "consumed": False})
             .sort("created_at", 1).limit(20)]
         for w in wakes:
             await _cdb().wake_events.update_one({"_id": w["_id"]},
                                             {"$set": {"consumed": True}})
+        # NOTE: dm/mention wakes carry no content themselves (the inbox rows
+        # do) — consuming them here stops the permanent retrigger spin
         await self.svcs._call(settings.chat_url,
                               "/internal/agent-inbox-delivered",
                               "POST", body={"agent_id": self.id})
@@ -345,6 +349,9 @@ before guessing parameters. Prefer the narrow tool over the broad one
                     await asyncio.sleep(2)
                 if not result or result["status"] == "failed":
                     err = (result or {}).get("error", "timeout")
+                    print(f"[turn] {self.name} generation failed: "
+                          f"{str(err)[:200]}")
+                    final_text = f"[generation failed: {err}]"
                     self.messages.append(
                         {"role": "user",
                          "content": f"[generation failed: {err}] "
