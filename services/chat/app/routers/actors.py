@@ -2,9 +2,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from .. import db, idgen, org
-from ..security import require_service
+from ..security import require_org_admin, require_service
 
 router = APIRouter(prefix="/actors", tags=["actors"])
+
+# R62 sec-01 org-authorization model: org mutations (create/reparent/delete)
+# run ONLY as the root human on the central tier (or the first-actor
+# bootstrap pseudo-actor for the very first create). Reads stay dual-tier.
+ORG_ADMIN = require_org_admin()
+ORG_ADMIN_BOOTSTRAP = require_org_admin(allow_bootstrap=True)
 
 KINDS = ("human", "agent")
 
@@ -35,7 +41,7 @@ def pub(a: dict) -> dict:
 
 
 @router.post("", status_code=201)
-async def create_actor(body: ActorIn, actor: dict = Depends(require_service)):
+async def create_actor(body: ActorIn, actor: dict = Depends(ORG_ADMIN_BOOTSTRAP)):
     if body.kind not in KINDS:
         raise HTTPException(400, f"kind must be one of {KINDS}")
     uname = body.username.lower()
@@ -123,7 +129,7 @@ async def subtree(actor_id: str, actor: dict = Depends(require_service)):
 
 @router.put("/{actor_id}/parent")
 async def set_parent(actor_id: str, body: ParentIn,
-                     actor: dict = Depends(require_service)):
+                     actor: dict = Depends(ORG_ADMIN)):
     target = await db.actors.find_one({"_id": actor_id})
     if not target:
         raise HTTPException(404, "no such actor")
@@ -133,7 +139,7 @@ async def set_parent(actor_id: str, body: ParentIn,
 
 
 @router.delete("/{actor_id}")
-async def delete_actor(actor_id: str, actor: dict = Depends(require_service)):
+async def delete_actor(actor_id: str, actor: dict = Depends(ORG_ADMIN)):
     if actor_id == actor["_id"]:
         raise HTTPException(400, "cannot delete yourself")
     t = await db.actors.find_one({"_id": actor_id})
