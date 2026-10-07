@@ -31,8 +31,10 @@ export function SecretsPane() {
   const items = (allSecrets || []).map((s) => ({ ...s, id: s._id })).filter((s) => {
     if (target) {
       if (s.owner !== target) return false;           // reach-down scope
-    } else if (s.owner !== me._id) {
-      return false;                                   // my scope: own rows only
+    } else if (s.owner !== me._id &&
+               !(s.shared_with || []).includes(me._id)) {
+      return false;   // my scope: own + genuinely shared-to-me (R40);
+                      // plain subtree metadata stays hidden (R63)
     }
     if (!q) return true;
     const rx = new RegExp(q.replace(/[^\w@.\- ]/g, '\\$&'), 'i');
@@ -81,7 +83,7 @@ export function SecretsPane() {
       {msg && <p className="ok-msg">{msg}</p>}
       {err && <p className="err-msg">{err}</p>}
       <p className="muted small">
-          My scope shows your own secrets only. Superiors open a named subordinate's list via the actor picker (reach-down); secrets you create there land in their scope.
+          My scope shows your own + shared-to-you secrets. Superiors open a named subordinate's list via the actor picker (reach-down); secrets you create there land in their scope.
         </p>
       <div className="secret-toolbar">
         <input placeholder="search (live)" value={q}
