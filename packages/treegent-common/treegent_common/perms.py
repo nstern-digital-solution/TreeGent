@@ -32,12 +32,18 @@ async def can(db, principal: dict, perm: str, resource: dict) -> bool:
     return False
 
 
-async def principal_for(db, actor_id: str) -> dict:
-    """Principal from an actor row. Root = the human at org depth 0."""
-    a = await db.actors.find_one({"_id": actor_id}) or {}
+def is_root_actor(a: dict) -> bool:
+    """Root = the human at org depth 0. THE root predicate, shared by the
+    permission engine and the services' org-management guards (R62 sec-01)
+    so there is exactly one definition of 'root' in the codebase."""
     org = a.get("org") or {}
-    return {"actor_id": actor_id,
-            "is_root": a.get("kind") == "human" and (org.get("depth") or 0) == 0}
+    return a.get("kind") == "human" and (org.get("depth") or 0) == 0
+
+
+async def principal_for(db, actor_id: str) -> dict:
+    """Principal from an actor row."""
+    a = await db.actors.find_one({"_id": actor_id}) or {}
+    return {"actor_id": actor_id, "is_root": is_root_actor(a)}
 
 
 async def resource_for(db, owner_ids: list[str],
