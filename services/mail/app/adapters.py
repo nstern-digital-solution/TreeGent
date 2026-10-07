@@ -23,6 +23,19 @@ async def send_sink(msg: dict) -> dict:
     return {"status": "sent", "via": "sink", "provider_id": None}
 
 
+async def fetch_received_email(email_id: str) -> dict:
+    """Resend received-emails API: GET /emails/{id}/received — returns
+    {text, html, headers, ...}. Uses the same RESEND_API_KEY as outbound."""
+    key = env_fallback("RESEND_API_KEY")
+    if not key:
+        raise RuntimeError("RESEND_API_KEY not set in environment")
+    req = urllib.request.Request(
+        f"https://api.resend.com/emails/{email_id}/received",
+        headers={"Authorization": f"Bearer {key}"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode())
+
+
 async def send_resend(msg: dict) -> dict:
     """Resend REST: POST /emails. API key from env only."""
     key = env_fallback("RESEND_API_KEY")

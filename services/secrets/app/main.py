@@ -109,8 +109,10 @@ async def create_secret(body: SecretIn, CLAIM_CALLER: str = "", _c: dict = Depen
                     403, "only a superior may create secrets in someone "
                          "else's scope")
         owner_id = want
-    shared_with = [a for a in dict.fromkeys(
-        list(body.shared_with) + [caller_id]) if a != owner_id] if         owner_id != caller_id else list(body.shared_with)
+    # R63: no implicit share-back — a superior's create-for lands ONLY in
+    # the subordinate's scope; sharing back is an explicit shared_with entry
+    shared_with = [a for a in dict.fromkeys(list(body.shared_with))
+                   if a != owner_id]
     doc = {
         "_id": f"sec_{abs(hash((owner_id, body.name, now().isoformat()))) % 10**16:016d}",
         "name": body.name, "username": body.username, "url": body.url,

@@ -29,7 +29,11 @@ export function SecretsPane() {
     return Secrets.find().fetch();
   }, []);
   const items = (allSecrets || []).map((s) => ({ ...s, id: s._id })).filter((s) => {
-    if (target && s.owner !== target) return false;   // reach-down scope
+    if (target) {
+      if (s.owner !== target) return false;           // reach-down scope
+    } else if (s.owner !== me._id) {
+      return false;                                   // my scope: own rows only
+    }
     if (!q) return true;
     const rx = new RegExp(q.replace(/[^\w@.\- ]/g, '\\$&'), 'i');
     return rx.test(s.name || '') || rx.test(s.username || '') ||
@@ -77,9 +81,8 @@ export function SecretsPane() {
       {msg && <p className="ok-msg">{msg}</p>}
       {err && <p className="err-msg">{err}</p>}
       <p className="muted small">
-        Search shows your own + shared secrets only. Superiors open a named
-        subordinate secret via the actor picker (reach-down).
-      </p>
+          My scope shows your own secrets only. Superiors open a named subordinate's list via the actor picker (reach-down); secrets you create there land in their scope.
+        </p>
       <div className="secret-toolbar">
         <input placeholder="search (live)" value={q}
           onChange={(e) => setQ(e.target.value)} />
@@ -97,7 +100,7 @@ export function SecretsPane() {
         <p className="muted small">
           reach-down: showing <b>{actors.find((a) => a._id === target)?.display_name}</b>'s
           secrets ({items.length} shown — live, no reload needed). New secrets you create now
-          land in their scope (shared back to you).
+          land in their scope only — not in yours (share explicitly via shared_with if needed).
         </p>
       )}
       <table className="usage-table">

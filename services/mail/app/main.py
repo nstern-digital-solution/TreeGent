@@ -294,20 +294,34 @@ async def resend_inbound(request: Request, secret: str = ""):
     into the matching mailbox (agent wake included)."""
     import json as _json
     body = await request.json()
-    # Resend posts { type, data: { email: {...} } } for inbound events
+    # Resend email.received: { type, data: { to: [...], from, subject,
+    # email_id, ... } } — METADATA ONLY (docs: body/headers/attachments are
+    # not included; fetch via GET /emails/{email_id}/received). Older/spec
+    # variants nesting under data.email are still accepted.
     d = (body.get("data") or {})
+    if d.get("type") == "email.received" or body.get("type") == "email.received":
+        d = d.get("data") or d
     email = d.get("email") or {}
-    to_addr = email.get("to") or ""
-    if isinstance(to_addr, list):
-        to_addr = to_addr[0] if to_addr else ""
-    to_addr = (to_addr or "").strip().lower()
-    from_addr = ((email.get("from") or "")
-                 or (d.get("from") or "")).strip()
-    subject = email.get("subject") or d.get("subject") or ""
+    to_raw = d.get("to") or email.get("to") or []
+    if isinstance(to_raw, str):
+        to_raw = [to_raw]
+    to_addr = (to_raw[0] if to_raw else "").strip().lower()
+    from_addr = (d.get("from") or email.get("from") or "").strip()
+    subject = d.get("subject") or email.get("subject") or ""
     text = email.get("text") or d.get("text") or ""
     html = email.get("html") or d.get("html") or ""
     if not to_addr:
         return {"delivered": False, "reason": "no recipient in webhook"}
+    # the webhook carries no body — fetch it (best effort; metadata-only
+    # delivery is still better than dropping the mail)
+    email_id = d.get("email_id") or email.get("id") or ""
+    if email_id and not text and not html:
+        try:
+            fetched = await adapters.fetch_received_email(email_id)
+            text = text or fetched.get("text") or ""
+            html = html or fetched.get("html") or ""
+        except Exception as e:  # noqa: BLE001 — body fetch is best-effort
+            text = f"[body unavailable: {str(e)[:120]}]"
     r = await adapters.ingest_inbound(to_addr, from_addr, subject,
                                       text, html)
     return r
