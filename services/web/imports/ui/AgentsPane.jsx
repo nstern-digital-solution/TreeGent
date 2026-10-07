@@ -35,11 +35,38 @@ const LongBody = ({ text, cls }) => {
 const UserBubble = ({ p }) => (
   <div className="cl-row cl-user">
     <div className="cl-bubble">
-      <div className="cl-meta">{p.sender} <span className="cl-info" title={p.ts}>ⓘ</span></div>
+      <div className="cl-meta">{p.sender} <InfoDot label="ⓘ" text={p.ts} /></div>
       <LongBody text={p.body} cls="cl-body" />
     </div>
   </div>
 );
+
+
+function InfoDot({ label, text }) {
+  // R63c: instant hover/click popover — native title tooltips are delayed,
+  // clipped, and unselectable; this shows immediately and pins on click.
+  const [open, setOpen] = React.useState(false);
+  const wrap = React.useRef(null);
+  React.useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => { if (!wrap.current || !wrap.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+  return (
+    <span className="cl-infodot" ref={wrap}
+          onMouseEnter={() => setOpen(true)}
+          onMouseLeave={() => setOpen(false)}>
+      <button type="button" className="cl-info"
+              onClick={() => setOpen((v) => !v)}>{label || 'ⓘ'}</button>
+      {open ? (
+        <span className="cl-infopop">
+          <pre>{text}</pre>
+        </span>
+      ) : null}
+    </span>
+  );
+}
 
 export function AgentsPane() {
   const actors = useTracker(() => Actors.find({}).fetch(), []);
@@ -105,7 +132,7 @@ export function AgentsPane() {
                   <div className="cl-toolcard">
                     <div className="cl-meta">🔧 {meta.tool}
                       {meta.args ? (
-                          <span className="cl-info" title={JSON.stringify(meta.args, null, 2)}>ⓘ args</span>
+                          <InfoDot label="ⓘ args" text={JSON.stringify(meta.args, null, 2)} />
                         ) : null}
                     </div>
                     <LongBody text={l.content} cls="cl-result" />
@@ -117,7 +144,7 @@ export function AgentsPane() {
             return (
               <div key={l._id} className="cl-row cl-assistant">
                 <div className="cl-bubble">
-                  <div className="cl-meta">assistant <span className="cl-info" title={t}>ⓘ</span></div>
+                  <div className="cl-meta">assistant <InfoDot label="ⓘ" text={t} /></div>
                   <LongBody text={l.content} cls="cl-body" />
                 </div>
               </div>
