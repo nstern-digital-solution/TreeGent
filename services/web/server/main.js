@@ -61,6 +61,140 @@ async function api(path, method, actorId, body) {
   return data;
 }
 
+// R62: ONE admin guard for every fleet RPC. A hidden admin pane is not an
+// authorization boundary — deny BEFORE any runtime fetch, mirroring the
+// tg.setAgentHost / tg.issueAgentKey check.
+async function requireAdmin() {
+  const caller = await Meteor.userAsync();
+  if (!caller || !caller.isAdmin) throw new Meteor.Error('forbidden', 'admin only');
+  return caller;
+}
+
+// R62: the mail service trusts X-Actor-Id from the central tier, so mail.api
+// must only ever declare an identity it has authorized. These are the routes
+// the web tier forwards — nothing else (internal hooks, adapters, …).
+const MAIL_ROUTES = [
+  ['GET', /^\/mailboxes$/],
+  ['GET', /^\/mailboxes\/[^/?]+\/messages$/],
+  ['POST', /^\/send$/],
+  ['GET', /^\/approvals$/],
+  ['POST', /^\/approvals\/[^/?]+\/decide$/],
+];
+
+// --- R62: resource-scoped publications ----------------------------------
+// REST-side checks cannot protect data published over DDP, so every
+// publication enforces its own resource scope. Admin/root sees the company;
+// anyone else sees SELF plus their org subtree (R61 reach-down, same
+// org.ancestors test as secretsMeta). The scope is REACTIVE: a shared
+// Actors/Mailboxes watcher re-runs every subscriber's scope recompute when
+// the org tree or mailbox membership changes and RE-SETS the cursor, so
+// moving an actor (revoking reach-down) withdraws rows from EXISTING
+// subscriptions. (Meteor 3 removed Subscription#autorun; manual
+// added/changed/removed over a re-armed observeChanges is the supported
+// publication shape for a selector that itself must change.)
+
+const scopeSubs = new Set();
+let scopeWatchers = null;
+
+function fireScopeDeps() {
+  for (const fn of [...scopeSubs]) fn();
+}
+
+function startScopeWatchers() {
+  if (scopeWatchers) return;
+  const opts = { nonMutatingCallbacks: true };
+  const ping = () => fireScopeDeps();
+  scopeWatchers = Promise.resolve()
+    .then(() => Actors.find({}, { fields: { org: 1 } })
+      .observeChanges({ added: ping, changed: ping, removed: ping }, opts))
+    .then(() => Mailboxes.find({}, { fields: { owner: 1, members: 1 } })
+      .observeChanges({ added: ping, changed: ping, removed: ping }, opts))
+    .catch((e) => { console.error('[scope-watch]', e.message); });
+}
+
+// ids a non-admin may see: self + whole org subtree (org.ancestors is the
+// stored root..parent path, R21)
+async function scopeIds(meId) {
+  const rows = await Actors.rawCollection()
+    .find({}, { projection: { _id: 1, 'org.ancestors': 1 } }).toArray();
+  const ids = [meId];
+  for (const a of rows) {
+    if (a._id === meId) continue;
+    if (((a.org && a.org.ancestors) || []).includes(meId)) ids.push(a._id);
+  }
+  return ids;
+}
+
+// Publishes coll rows matching (async) selectorFor(scopeIds): live within the
+// scope, withdrawn when the scope shrinks.
+function publishScoped(pub, coll, collName, meId, selectorFor, opts) {
+  startScopeWatchers();
+  const published = new Map();   // _id -> fields last sent
+  let obs = null;
+  let seq = 0;
+  let first = true;
+  const markReady = () => {
+    if (!first) return;
+    first = false;
+    try { pub.ready(); } catch (e) { /* sub already stopped */ }
+  };
+  const withdraw = (id) => {
+    if (!published.has(id)) return;
+    published.delete(id);
+    try { pub.removed(collName, id); } catch (e) { /* sub already stopped */ }
+  };
+  const handlers = {
+    added(id, fields) {
+      if (published.has(id)) {
+        published.set(id, { ...published.get(id), ...fields });
+        try { pub.changed(collName, id, fields); } catch (e) { /* stopped */ }
+      } else {
+        published.set(id, { ...fields });
+        try { pub.added(collName, id, fields); } catch (e) { /* stopped */ }
+      }
+    },
+    changed(id, fields) {
+      if (!published.has(id)) return;
+      published.set(id, { ...published.get(id), ...fields });
+      try { pub.changed(collName, id, fields); } catch (e) { /* stopped */ }
+    },
+    removed(id) { withdraw(id); },
+  };
+  const rescope = async () => {
+    const mySeq = ++seq;
+    try {
+      const ids = await scopeIds(meId);
+      if (mySeq !== seq) return;              // superseded by a newer scope
+      const selector = await selectorFor(ids);
+      if (mySeq !== seq) return;
+      const cursor = coll.find(selector, opts || {});
+      const nextObs = await cursor.observeChanges(handlers, { nonMutatingCallbacks: true });
+      const snapshot = await cursor.fetchAsync();
+      if (mySeq !== seq) { await nextObs.stop(); return; }
+      // rows that fell out of scope are withdrawn here — the new observation
+      // never saw them, so no removed callback will come for them
+      const keep = new Set(snapshot.map((d) => d._id));
+      for (const id of [...published.keys()]) if (!keep.has(id)) withdraw(id);
+      const prev = obs;
+      obs = nextObs;
+      if (prev) await prev.stop();
+      markReady();
+    } catch (e) {
+      console.error(`[scoped-publish ${collName}]`, e.message);
+      markReady();
+    }
+  };
+  const trigger = () => { rescope(); };
+  scopeSubs.add(trigger);
+  pub.onStop(() => {
+    scopeSubs.delete(trigger);
+    const handle = obs;
+    obs = null;
+    if (handle) Promise.resolve(handle.stop()).catch(() => {});
+  });
+  trigger();
+}
+
 // --- publications ------------------------------------------------------
 
 // auto-subscribed: publish our custom fields for the logged-in user
@@ -133,32 +267,70 @@ Meteor.publish('agentTranscripts', async function (agentId, limit) {
       fields: { agent_id: 1, ts: 1, role: 1, content: 1, meta: 1 } });
 });
 
-Meteor.publish('proxyUsage', function (days) {
+Meteor.publish('proxyUsage', async function (days) {
   if (!this.userId) return this.ready();
   const cutoff = new Date(Date.now() - (days || 7) * 86400 * 1000);
-  return UsageEvents.find({ ts: { $gte: cutoff } },
-    { fields: { agent_id: 1, tokens_in: 1, tokens_out: 1,
-                status: 1, model: 1, provider: 1, ts: 1, class: 1,
-                error: 1, reason: 1, queue_wait_s: 1, job_id: 1 } });
+  const fields = { agent_id: 1, tokens_in: 1, tokens_out: 1,
+                   status: 1, model: 1, provider: 1, ts: 1, class: 1,
+                   error: 1, reason: 1, queue_wait_s: 1, job_id: 1 };
+  const user = await Meteor.users.findOneAsync(this.userId);
+  if (user && user.isAdmin) {
+    return UsageEvents.find({ ts: { $gte: cutoff } }, { fields });
+  }
+  const me = await myActor(user);
+  if (!me) return this.ready();
+  // R62: own + subtree usage only (was: company-wide)
+  publishScoped(this, UsageEvents, 'usage_events', me._id,
+    (ids) => ({ ts: { $gte: cutoff }, agent_id: { $in: ids } }), { fields });
 });
 
 // --- mail + approvals (M3) ----------------------------------------------
 
-Meteor.publish('mailboxesData', function () {
+Meteor.publish('mailboxesData', async function () {
   if (!this.userId) return this.ready();
-  return Mailboxes.find();
+  const user = await Meteor.users.findOneAsync(this.userId);
+  if (user && user.isAdmin) return Mailboxes.find();
+  const me = await myActor(user);
+  if (!me) return this.ready();
+  // R62: own + subtree mailboxes only (was: every mailbox row)
+  publishScoped(this, Mailboxes, 'mailboxes', me._id,
+    (ids) => ({ $or: [{ owner: { $in: ids } }, { members: { $in: ids } }] }));
 });
 
-Meteor.publish('mailMessages', function (mailboxId) {
+Meteor.publish('mailMessages', async function (mailboxId) {
   if (!this.userId || !mailboxId) return this.ready();
-  return MailMessages.find({ mailbox_id: mailboxId },
+  const user = await Meteor.users.findOneAsync(this.userId);
+  if (user && user.isAdmin) {
+    return MailMessages.find({ mailbox_id: mailboxId },
+      { sort: { ts: -1 }, limit: 100 });
+  }
+  const me = await myActor(user);
+  if (!me) return this.ready();
+  // R62: only from a mailbox inside my scope (owner/member/subtree)
+  publishScoped(this, MailMessages, 'mail_messages', me._id,
+    async (ids) => {
+      const mb = await Mailboxes.findOneAsync({ _id: mailboxId });
+      const visible = mb
+        && ((mb.owner && ids.includes(mb.owner))
+            || (mb.members || []).some((m) => ids.includes(m)));
+      return visible ? { mailbox_id: mailboxId } : { _id: '__r62_no_access__' };
+    },
     { sort: { ts: -1 }, limit: 100 });
 });
 
-Meteor.publish('approvalsData', function () {
+Meteor.publish('approvalsData', async function () {
   if (!this.userId) return this.ready();
-  // humans see all approvals (they are the approvers/admins in v1)
-  return Approvals.find({}, { sort: { created_at: -1 }, limit: 200 });
+  const user = await Meteor.users.findOneAsync(this.userId);
+  if (user && user.isAdmin) {
+    return Approvals.find({}, { sort: { created_at: -1 }, limit: 200 });
+  }
+  const me = await myActor(user);
+  if (!me) return this.ready();
+  // R62: own + subtree approvals only (was: company-wide incl. payloads)
+  publishScoped(this, Approvals, 'approvals', me._id,
+    (ids) => ({ $or: [{ approver_id: { $in: ids } },
+                      { requester_id: { $in: ids } }] }),
+    { sort: { created_at: -1 }, limit: 200 });
 });
 
 // --- live metadata for Secrets / Files / Agents panes -------------------
@@ -194,9 +366,19 @@ Meteor.publish('filesMeta', async function () {
     { $or: [{ owner: me._id }, { shared_with: me._id }] });
 });
 
-Meteor.publish('agentTurns', function (agentId, limit) {
+Meteor.publish('agentTurns', async function (agentId, limit) {
   if (!this.userId || !agentId) return this.ready();
-  return RuntimeTurns.find({ agent_id: agentId },
+  const user = await Meteor.users.findOneAsync(this.userId);
+  if (user && user.isAdmin) {
+    return RuntimeTurns.find({ agent_id: agentId },
+      { sort: { started: -1 }, limit: limit || 50 });
+  }
+  const me = await myActor(user);
+  if (!me) return this.ready();
+  // R62: only own/subtree agents' turns (was: any requested agent)
+  publishScoped(this, RuntimeTurns, 'runtime_turns', me._id,
+    (ids) => (ids.includes(agentId)
+      ? { agent_id: agentId } : { _id: '__r62_no_access__' }),
     { sort: { started: -1 }, limit: limit || 50 });
 });
 
@@ -269,12 +451,14 @@ Meteor.methods({
   },
 
   async 'tg.hosts.list'() {
+    await requireAdmin();
     const r = await fetch(`${RUNTIME_URL}/internal/hosts`, {
       headers: { 'X-Service-Token': SERVICE_TOKEN } });
     return r.json();
   },
   async 'tg.hosts.pubkey'(hostId) {
     check(hostId, String);
+    await requireAdmin();
     const r = await fetch(`${RUNTIME_URL}/internal/hosts/${hostId}/pubkey`, {
       headers: { 'X-Service-Token': SERVICE_TOKEN } });
     if (!r.ok) throw new Meteor.Error('hosts', `${r.status}`);
@@ -282,6 +466,7 @@ Meteor.methods({
   },
   async 'tg.hosts.check'(hostId) {
     check(hostId, String);
+    await requireAdmin();
     const r = await fetch(`${RUNTIME_URL}/internal/hosts/${hostId}/check`, {
       method: 'POST', headers: { 'X-Service-Token': SERVICE_TOKEN } });
     if (!r.ok) throw new Meteor.Error('hosts', `${r.status}`);
@@ -289,6 +474,7 @@ Meteor.methods({
   },
   async 'tg.hosts.update'(hostId) {
     check(hostId, String);
+    await requireAdmin();
     const r = await fetch(`${RUNTIME_URL}/internal/hosts/${hostId}/update`, {
       method: 'POST', headers: { 'X-Service-Token': SERVICE_TOKEN } });
     if (!r.ok) throw new Meteor.Error('hosts', `${r.status}`);
@@ -296,6 +482,7 @@ Meteor.methods({
   },
   async 'tg.hosts.remove'(hostId) {
     check(hostId, String);
+    await requireAdmin();
     const r = await fetch(`${RUNTIME_URL}/internal/hosts/${hostId}`, {
       method: 'DELETE',
       headers: { 'X-Service-Token': SERVICE_TOKEN } });
@@ -304,6 +491,7 @@ Meteor.methods({
   },
   async 'tg.hosts.add'(name, address, port, sshUser) {
     check(name, String); check(address, String); check(port, Number); check(sshUser, String);
+    await requireAdmin();
     const r = await fetch(`${RUNTIME_URL}/internal/hosts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN },
@@ -313,6 +501,7 @@ Meteor.methods({
   },
   async 'tg.hosts.provision'(hostId) {
     check(hostId, String);
+    await requireAdmin();
     const r = await fetch(`${RUNTIME_URL}/internal/hosts/${hostId}/provision`, {
       method: 'POST',
       headers: { 'X-Service-Token': SERVICE_TOKEN } });
@@ -388,13 +577,34 @@ Meteor.methods({
     check(path, String); check(method, String);
     const caller = await Meteor.userAsync();
     if (!caller) throw new Meteor.Error('forbidden', 'login required');
-    const actor = actorId || ((await myActor(caller)) || {})._id || '';
-    let url = `${MAIL_URL}${path}`;
-    if (actorId) url += (path.includes('?') ? '&' : '?') + `actor_id=${encodeURIComponent(actorId)}`;
-    const res = await fetch(url, {
+    // fail closed: no actor mapping, no forwarding
+    const me = await myActor(caller);
+    if (!me) throw new Meteor.Error('no-actor', 'user has no actor record');
+    // R62: forward only the intended mail API contract
+    const pathname = path.split('?')[0];
+    const routeOk = MAIL_ROUTES.some(([m, re]) => m === method && re.test(pathname));
+    if (!routeOk) throw new Meteor.Error('forbidden', 'unsupported mail route');
+    // R62: the forwarded identity is ALWAYS the caller's own actor. A supplied
+    // actorId is honored only as READ-ONLY reach-down into my own org subtree
+    // (R61 parity with secrets.api) — never on writes or approval decisions,
+    // which stay bound to the real caller. Peers/strangers 403.
+    let actor = me._id;
+    if (actorId && actorId !== me._id) {
+      if (method !== 'GET') {
+        throw new Meteor.Error('forbidden',
+          'writes/decisions cannot impersonate another actor');
+      }
+      const target = await Actors.findOneAsync({ _id: actorId });
+      const anc = (target && target.org && target.org.ancestors) || [];
+      if (!caller.isAdmin && !anc.includes(me._id)) {
+        throw new Meteor.Error('forbidden', 'reach-down requires superior position');
+      }
+      actor = actorId;
+    }
+    const res = await fetch(`${MAIL_URL}${path}`, {
       method,
       headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN, 'X-Actor-Id': actor },
-      body: body ? JSON.stringify(body) : undefined,
+      body: body && method !== 'GET' ? JSON.stringify(body) : undefined,
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
