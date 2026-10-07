@@ -29,6 +29,7 @@ export function SecretsPane() {
     return Secrets.find().fetch();
   }, []);
   const items = (allSecrets || []).map((s) => ({ ...s, id: s._id })).filter((s) => {
+    if (target && s.owner !== target) return false;   // reach-down scope
     if (!q) return true;
     const rx = new RegExp(q.replace(/[^\w@.\- ]/g, '\\$&'), 'i');
     return rx.test(s.name || '') || rx.test(s.username || '') ||
@@ -85,7 +86,7 @@ export function SecretsPane() {
         <button className="btn small" onClick={() => setForm({
           name: '', value: '', username: '', url: '', notes: '', shared_with: [],
         })}>new secret</button>
-        <select value={target} onChange={(e) => { setTarget(e.target.value); setItems(null); }}>
+        <select value={target} onChange={(e) => setTarget(e.target.value)}>
           <option value="">my scope</option>
           {actors.filter((a) => a._id !== me._id).map((a) => (
             <option key={a._id} value={a._id}>open as: {a.display_name}</option>
@@ -94,12 +95,9 @@ export function SecretsPane() {
       </div>
       {target && (
         <p className="muted small">
-          reach-down: showing <b>{actors.find((a) => a._id === target)?.display_name}</b>'s secrets
-          — <button className="btn small" onClick={() => run(async () => {
-            const r = await call(`/secrets`, 'GET', null, target);
-            setItems(r);
-            return `loaded ${r.length} secret(s) of ${actors.find((a) => a._id === target)?.display_name}`;
-          })}>load their list</button> (their own-scope view, metadata only)
+          reach-down: showing <b>{actors.find((a) => a._id === target)?.display_name}</b>'s
+          secrets ({items.length} shown — live, no reload needed). New secrets you create now
+          land in their scope (shared back to you).
         </p>
       )}
       <table className="usage-table">

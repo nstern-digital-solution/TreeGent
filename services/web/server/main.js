@@ -168,9 +168,20 @@ Meteor.publish('secretsMeta', async function () {
   const user = await Meteor.users.findOneAsync(this.userId);
   const me = await myActor(user);
   if (!me) return this.ready();
-  // R40 own-scope: own + shared-with-me. Superiors do NOT see subtree here.
+  // R40 own-scope: own + shared-with-me. R61: superiors ALSO receive their
+  // whole subtree's secrets (metadata only) so the reach-down picker filters
+  // live on the client — the service API still enforces per-request auth.
+  const selector = { $or: [{ owner: me._id }, { shared_with: me._id }] };
+  const actorsRaw = await Actors.rawCollection().find(
+    {}, { projection: { _id: 1, org: 1, kind: 1 } }).toArray();
+  const subtree = actorsRaw
+    .filter((a) => (a.org && a.org.ancestors || []).includes(me._id))
+    .map((a) => a._id);
+  if (subtree.length) {
+    selector.$or.push({ owner: { $in: subtree } });
+  }
   return Secrets.find(
-    { $or: [{ owner: me._id }, { shared_with: me._id }] },
+    selector,
     { fields: { value_enc: 0 } });   // ciphertext never leaves the server
 });
 
