@@ -21,6 +21,10 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+# R62 fail-closed: refuse insecure shared credentials at boot
+from treegent_common.security import assert_secure_service_token  # noqa: E402
+assert_secure_service_token(settings.service_token, "secrets")
+
 client = AsyncIOMotorClient(settings.mongo_url)
 db = client[settings.db_name]
 

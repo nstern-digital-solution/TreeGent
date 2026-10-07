@@ -20,6 +20,13 @@ ORDER=()
 # by grandchildren unless exported — this bug baked 127.0.0.1 URLs into agent hosts
 # at provision time because the runtime read TG_PUBLIC_URL with a silent fallback)
 export TG_MONGO_URL TG_PUBLIC_URL TG_SERVICE_TOKEN TG_MAIL_DOMAIN 2>/dev/null || true
+# R62 fail-closed (security finding 06): never fall back to the dev token silently.
+if [ -z "${TG_SERVICE_TOKEN:-}" ] && [ "${TG_DEV:-}" != "1" ]; then
+  echo "ERROR: TG_SERVICE_TOKEN is not set — refusing to start central services with the"
+  echo "       publicly-known dev token. Set it in .env / /etc/treegent/env, or export"
+  echo "       TG_DEV=1 explicitly for a development machine."
+  exit 1
+fi
 
 now() { date +%s; }
 

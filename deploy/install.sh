@@ -11,6 +11,14 @@ SYSUSER="treegent"
 ENV_DIR="/etc/treegent"
 
 [ -f "$ENV_FILE" ] || { echo "ERROR: $ENV_FILE missing (cp deploy/env.example .env)"; exit 1; }
+# R62 fail-closed: refuse placeholder/empty shared credentials (security finding 06)
+TOKEN_VAL="$(grep -E '^TG_SERVICE_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2-)"
+case "$TOKEN_VAL" in
+  ""|"change-me-random"|"dev-service-token")
+    echo "ERROR: TG_SERVICE_TOKEN in $ENV_FILE is empty or a known placeholder."
+    echo "       Generate one:  head -c32 /dev/urandom | base64 | tr -d '=+/' | head -c 40"
+    exit 1 ;;
+esac
 # strip inline comments: systemd EnvironmentFile + pydantic keep them as value bytes
 sed -i -E 's/[[:space:]]+#.*$//' "$ENV_FILE"
 

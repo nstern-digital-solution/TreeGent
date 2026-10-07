@@ -20,9 +20,11 @@ def _token_ok(t: str) -> bool:
     unless TG_DEV=1 explicitly marks a development machine. Agent hosts
     run WITHOUT TG_SERVICE_TOKEN (R45), so their runtime API must refuse
     the well-known default instead of accepting it."""
+    if not t or not settings.service_token:
+        return False                       # empty header/config never authorizes
     if t != settings.service_token:
         return False
-    if t == "dev-service-token" and os.environ.get("TG_DEV") != "1":
+    if t in ("dev-service-token",) and os.environ.get("TG_DEV") != "1":
         return False
     return True
 

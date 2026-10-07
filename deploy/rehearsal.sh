@@ -31,6 +31,8 @@ echo "== TreeGent deploy rehearsal =="
 echo "[1/5] env.example hygiene + service imports"
 ENVF="$LAB/env"
 sed -E 's/[[:space:]]+#.*$//' "$REPO/deploy/env.example" > "$ENVF"
+# R62: the lab runs with a real generated token (fail-closed guard would reject the placeholder)
+sed -i "s|^TG_SERVICE_TOKEN=.*|TG_SERVICE_TOKEN=lab-$(head -c32 /dev/urandom | base64 | tr -d '=+/' | head -c 40)|" "$ENVF"
 if grep -qE '=.*#' "$ENVF"; then bad "inline comments survive sanitization"; else ok "env sanitized"; fi
 if grep -qE '^TG_[A-Z_]*MONGO_URL=.{3,}' <(grep -v '^TG_MONGO_URL=' "$ENVF"); then
   bad "a second MONGO_URL default shadows TG_MONGO_URL (web-goes-localhost class)"
@@ -57,6 +59,8 @@ ss -l 2>/dev/null | grep -q ':27017 ' && ok "mongo reachable" || bad "mongo not 
 mkdir -p "$LAB/varlog"
 HOME_SAVE="$HOME"
 export HOME="$LAB"   # star.json lookup, meteor paths -> lab
+# R62: the lab's generated token must reach the supervisor (fail-closed guard)
+set -a; . "$ENVF"; set +a
 TG_REHEARSAL=1 bash "$REPO/deploy/run-central.sh" >"$SUP_LOG" 2>&1 &
 SUP_PID=$!
 export HOME="$HOME_SAVE"

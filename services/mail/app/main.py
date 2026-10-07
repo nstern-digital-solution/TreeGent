@@ -314,7 +314,8 @@ async def resend_inbound(request: Request, secret: str = ""):
 
 
 
-@router.get("/adapters")
+@router.get("/adapters",
+            dependencies=[Depends(require_service)])
 async def list_adapters():
     return [{"id": r["_id"], "direction": r["direction"], "kind": r["kind"],
              "enabled": r.get("enabled", True)}
@@ -322,7 +323,7 @@ async def list_adapters():
 
 
 @router.put("/adapters/{adapter_id}", status_code=201,
-            )
+            dependencies=[Depends(require_service)])
 async def upsert_adapter(adapter_id: str, direction: str, kind: str,
                          enabled: bool = True):
     if direction not in ("outbound", "inbound"):
