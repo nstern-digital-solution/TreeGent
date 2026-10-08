@@ -14,7 +14,7 @@ WORKER = os.environ.get("TG_AGENT_ID") or (sys.argv[2] if len(sys.argv) > 2 else
 if not WORKER_KEY or not WORKER:
     sys.exit("usage: TG_AGENT_KEY=sk-agt-... TG_AGENT_ID=agt_... "
              "python3 r45_matrix.py [key] [agent_id]")
-FELIX = os.environ.get("TG_PEER_ID", "hum_3b1a86e25fb16826")
+PEER_HUMAN = os.environ.get("TG_PEER_ID", "hum_3b1a86e25fb16826")
 
 def req(url, headers=None):
     r = urllib.request.Request(url, headers=headers or {})
@@ -31,8 +31,8 @@ s, b = req("http://127.0.0.1:8003/secrets", {"X-Agent-Key": WORKER_KEY})
 names = [x.get("name") for x in json.loads(b)] if s == 200 else b
 results.append(("agent key derives identity (secrets)", s, names))
 
-# 2) key + SPOOFED caller_id=felix -> still worker scope
-s, b = req("http://127.0.0.1:8003/secrets?caller_id=" + FELIX,
+# 2) key + SPOOFED caller_id=rootuser -> still worker scope
+s, b = req("http://127.0.0.1:8003/secrets?caller_id=" + PEER_HUMAN,
            {"X-Agent-Key": WORKER_KEY})
 owners = sorted({x.get("owner") for x in json.loads(b)}) if s == 200 else b
 results.append(("spoofed caller_id ignored", s,
@@ -40,16 +40,16 @@ results.append(("spoofed caller_id ignored", s,
 
 # 3) key + spoofed X-Actor-Id on chat -> identity stays worker
 s, b = req("http://127.0.0.1:8000/conversations",
-           {"X-Agent-Key": WORKER_KEY, "X-Actor-Id": FELIX,
+           {"X-Agent-Key": WORKER_KEY, "X-Actor-Id": PEER_HUMAN,
             "X-Service-Token": "dev-service-token"})
 ids = [c.get("id") for c in json.loads(b)] if s == 200 else b
 results.append(("spoofed X-Actor-Id ignored (chat)", s, ids))
 
-# 4) central tier (web server) still works for felix
-s, b = req("http://127.0.0.1:8003/secrets?caller_id=" + FELIX,
-           {"X-Service-Token": "dev-service-token", "X-Actor-Id": FELIX})
+# 4) central tier (web server) still works for rootuser
+s, b = req("http://127.0.0.1:8003/secrets?caller_id=" + PEER_HUMAN,
+           {"X-Service-Token": "dev-service-token", "X-Actor-Id": PEER_HUMAN})
 names = [x.get("name") for x in json.loads(b)] if s == 200 else b
-results.append(("central tier intact (felix via token)", s, names))
+results.append(("central tier intact (rootuser via token)", s, names))
 
 # 5) no credential -> 401
 s, b = req("http://127.0.0.1:8003/secrets")
