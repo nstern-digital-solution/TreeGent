@@ -8,6 +8,8 @@ client = AsyncIOMotorClient(settings.mongo_url)
 db = client[settings.db_name]
 
 agent_keys = db.agent_keys          # {_id: key, agent_id, created_at, revoked}
+actors = db.actors                  # {_id: actor id, ...} — R69 auth existence
+                                   # re-check (chat owns the docs; same DB)
 task_classes = db.task_classes      # {_id: agent|task (+future), default: bool}
 providers = db.providers            # {_id: name, base_url, kind, key_env, enabled}
 model_catalog = db.model_catalog    # {_id: "provider/model", designations: [agent|task], rank, modalities, excluded, listed}

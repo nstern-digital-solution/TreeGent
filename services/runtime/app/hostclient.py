@@ -45,7 +45,13 @@ class HostClient:
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.request(method, url, headers=self._headers,
                                 json=body)
-        data = r.json() if r.content else {}
+        # R72b: parse BEFORE the status check used to turn any non-JSON
+        # error body (plain-text 500 from a crashing hop) into
+        # JSONDecodeError — masking the real status. Parse defensively.
+        try:
+            data = r.json() if r.content else {}
+        except Exception:  # noqa: BLE001 — non-JSON body
+            data = {"raw": r.text[:300]}
         if r.status_code == 401:
             raise RuntimeError("host credentials rejected — re-provision "
                                "this host (key rotated or host removed)")

@@ -44,7 +44,12 @@ class Services:
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.request(method, f"{base}{path}", headers=headers,
                                 json=body, params=params)
-        data = r.json() if r.content else {}
+        # R72b: r.json() before the status check masked non-JSON error
+        # bodies (plain-text 500s) as JSONDecodeError. Parse defensively.
+        try:
+            data = r.json() if r.content else {}
+        except Exception:  # noqa: BLE001 — non-JSON body
+            data = {"raw": r.text[:300]}
         if r.status_code >= 400:
             raise RuntimeError(f"service {r.status_code}: "
                                f"{json.dumps(data)[:300]}")
