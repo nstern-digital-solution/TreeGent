@@ -10,9 +10,21 @@ import { Secrets, Files, RuntimeTurns } from '../imports/coreCollections.js';
 // anything client-reachable — env injection keeps it out of every bundle.
 const CHAT_URL = process.env.TG_CHAT_URL || (Meteor.settings && Meteor.settings.private && Meteor.settings.private.chatUrl) || 'http://127.0.0.1:8000';
 const SERVICE_TOKEN = process.env.TG_SERVICE_TOKEN || (Meteor.settings && Meteor.settings.private && Meteor.settings.private.serviceToken) || 'dev-service-token';
-const PROXY_URL = process.env.TG_PROXY_URL || (Meteor.settings && Meteor.settings.private && Meteor.settings.proxyUrl) || 'http://127.0.0.1:8001';
-const MAIL_URL = process.env.TG_MAIL_URL || (Meteor.settings && Meteor.settings.private && Meteor.settings.mailUrl) || 'http://127.0.0.1:8002';
+const PROXY_URL = process.env.TG_PROXY_URL || (Meteor.settings && Meteor.settings.private && Meteor.settings.private.proxyUrl) || 'http://127.0.0.1:8001';
+const MAIL_URL = process.env.TG_MAIL_URL || (Meteor.settings && Meteor.settings.private && Meteor.settings.private.mailUrl) || 'http://127.0.0.1:8002';
 const RUNTIME_URL = process.env.TG_RUNTIME_URL || (Meteor.settings && Meteor.settings.private && Meteor.settings.private.runtimeUrl) || 'http://127.0.0.1:8010';
+
+// R68: fail-closed boot guard, mirroring treegent_common/security.py — the
+// Python services refuse insecure shared credentials at boot and the Node
+// process must never be the soft spot. settings.json ships an EMPTY
+// serviceToken; the dev default below is only reachable with TG_DEV=1.
+const INSECURE_TOKENS = new Set(['', 'dev-service-token', 'change-me-random']);
+if (INSECURE_TOKENS.has(SERVICE_TOKEN) && process.env.TG_DEV !== '1') {
+  throw new Error(
+    'web: TG_SERVICE_TOKEN is empty/dev-default — refusing to start. ' +
+    'Set a real token (quickstart/install.sh generate one) or export ' +
+    'TG_DEV=1 for an explicit development machine.');
+}
 
 // --- helpers (Meteor 3: async collection access on the server) -----------
 
@@ -91,6 +103,46 @@ const MAIL_ROUTES = [
   ['POST', /^\/approvals\/[^/?]+\/decide$/],
 ];
 
+// R68: same contract discipline for the secrets/files forwarders — only the
+// documented resource routes cross the tier, never internal hooks/adapters.
+const SECRETS_ROUTES = [
+  ['GET', /^\/secrets$/],
+  ['POST', /^\/secrets$/],
+  ['PUT', /^\/secrets\/[^/?]+$/],
+  ['DELETE', /^\/secrets\/[^/?]+$/],
+  ['GET', /^\/secrets\/[^/?]+\/value$/],
+];
+const FILES_ROUTES = [
+  ['GET', /^\/files$/],
+  ['POST', /^\/files$/],
+  ['GET', /^\/files\/[^/?]+\/download$/],
+  ['GET', /^\/files\/[^/?]+\/url$/],
+  ['PUT', /^\/files\/[^/?]+\/share$/],
+  ['DELETE', /^\/files\/[^/?]+$/],
+];
+
+// R62/R68: ONE impersonation policy for every central-tier forwarder. The
+// forwarded identity is ALWAYS the caller's own actor. A supplied actorId is
+// honored only as READ-ONLY reach-down into the caller's own org subtree
+// (R61; admin may reach down anywhere) — never on writes/decisions, which
+// stay bound to the real caller. Peers/strangers 403. Fail closed: no actor
+// mapping for the user, no forwarding at all.
+async function forwardedActor(caller, method, actorId) {
+  const me = await myActor(caller);
+  if (!me) throw new Meteor.Error('no-actor', 'user has no actor record');
+  if (!actorId || actorId === me._id) return me._id;
+  if (method !== 'GET') {
+    throw new Meteor.Error('forbidden',
+      'writes/decisions cannot impersonate another actor');
+  }
+  const target = await Actors.findOneAsync({ _id: actorId });
+  const anc = (target && target.org && target.org.ancestors) || [];
+  if (!caller.isAdmin && !anc.includes(me._id)) {
+    throw new Meteor.Error('forbidden', 'reach-down requires superior position');
+  }
+  return actorId;
+}
+
 // --- R62: resource-scoped publications ----------------------------------
 // REST-side checks cannot protect data published over DDP, so every
 // publication enforces its own resource scope. Admin/root sees the company;
@@ -143,6 +195,9 @@ function publishScoped(pub, coll, collName, meId, selectorFor, opts) {
   let obs = null;
   let seq = 0;
   let first = true;
+  let serving = true;            // R68: false while failing closed
+  let stopped = false;
+  let retryTimer = null;
   const markReady = () => {
     if (!first) return;
     first = false;
@@ -155,6 +210,7 @@ function publishScoped(pub, coll, collName, meId, selectorFor, opts) {
   };
   const handlers = {
     added(id, fields) {
+      if (!serving || stopped) return;
       if (published.has(id)) {
         published.set(id, { ...published.get(id), ...fields });
         try { pub.changed(collName, id, fields); } catch (e) { /* stopped */ }
@@ -164,15 +220,16 @@ function publishScoped(pub, coll, collName, meId, selectorFor, opts) {
       }
     },
     changed(id, fields) {
-      if (!published.has(id)) return;
+      if (!serving || stopped || !published.has(id)) return;
       published.set(id, { ...published.get(id), ...fields });
       try { pub.changed(collName, id, fields); } catch (e) { /* stopped */ }
     },
-    removed(id) { withdraw(id); },
+    removed(id) { if (!serving || stopped) return; withdraw(id); },
   };
   const rescope = async () => {
     const mySeq = ++seq;
     try {
+      serving = true;              // R68: re-arm after a fail-closed window
       const ids = await scopeIds(meId);
       if (mySeq !== seq) return;              // superseded by a newer scope
       const selector = await selectorFor(ids);
@@ -190,13 +247,33 @@ function publishScoped(pub, coll, collName, meId, selectorFor, opts) {
       if (prev) await prev.stop();
       markReady();
     } catch (e) {
-      console.error(`[scoped-publish ${collName}]`, e.message);
+      // R68: FAIL CLOSED. The old fail-open shape logged and kept the stale
+      // observer + already-published rows live, so a revoked subordinate kept
+      // receiving data until the next dependency change. On any rescope error
+      // we now stop the observer and withdraw EVERYTHING already published —
+      // an uncertain scope serves no rows — then retry on a timer (and on the
+      // next scope change, since the trigger stays registered).
+      console.error(`[scoped-publish ${collName}] rescope failed — withdrawing all rows (fail closed):`, e.message);
+      serving = false;
+      const prev = obs;
+      obs = null;
+      if (prev) { try { await prev.stop(); } catch (e2) { /* already gone */ } }
+      for (const id of [...published.keys()]) withdraw(id);
       markReady();
+      if (!retryTimer && !stopped) {
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          if (!stopped) { serving = true; rescope(); }
+        }, 5000);
+      }
     }
   };
   const trigger = () => { rescope(); };
   scopeSubs.add(trigger);
   pub.onStop(() => {
+    stopped = true;
+    serving = false;
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     scopeSubs.delete(trigger);
     const handle = obs;
     obs = null;
@@ -309,6 +386,10 @@ Meteor.publish('mailboxesData', async function () {
 
 Meteor.publish('mailMessages', async function (mailboxId) {
   if (!this.userId || !mailboxId) return this.ready();
+  // R68: type-check the client argument — an object here is selector
+  // injection (e.g. {_id: {$gt: ''}} would widen the publish query across
+  // every mailbox once one visible mailbox matched).
+  check(mailboxId, String);
   const user = await Meteor.users.findOneAsync(this.userId);
   if (user && user.isAdmin) {
     return MailMessages.find({ mailbox_id: mailboxId },
@@ -406,7 +487,10 @@ Meteor.methods({
     if (await Meteor.users.find().countAsync() > 0) {
       throw new Meteor.Error('forbidden', 'bootstrap closed: users already exist');
     }
-    const uid = Accounts.createUser({ username, password });
+    // R68 drive-by (found while proving): Meteor 3's Accounts.createUser is
+    // ASYNC — the un-awaited call raced these updates, so isAdmin/display
+    // silently never landed and the "admin" could not use any admin method.
+    const uid = await Accounts.createUserAsync({ username, password });
     await Meteor.users.updateAsync(uid, { $set: { isAdmin: true, display } });
     // first actor is created through the chat service's bootstrap pseudo-actor
     await api('/actors', 'POST', 'boot', {
@@ -428,7 +512,8 @@ Meteor.methods({
       uid = existing._id;
       await Meteor.users.updateAsync(uid, { $set: { display } });
     } else {
-      uid = Accounts.createUser({ username, password });
+      // R68 drive-by: await the async Meteor 3 create (see tg.bootstrapAdmin)
+      uid = await Accounts.createUserAsync({ username, password });
       await Meteor.users.updateAsync(uid, { $set: { display } });
     }
     const me = await myActor(caller);
@@ -596,20 +681,9 @@ Meteor.methods({
     // R62: the forwarded identity is ALWAYS the caller's own actor. A supplied
     // actorId is honored only as READ-ONLY reach-down into my own org subtree
     // (R61 parity with secrets.api) — never on writes or approval decisions,
-    // which stay bound to the real caller. Peers/strangers 403.
-    let actor = me._id;
-    if (actorId && actorId !== me._id) {
-      if (method !== 'GET') {
-        throw new Meteor.Error('forbidden',
-          'writes/decisions cannot impersonate another actor');
-      }
-      const target = await Actors.findOneAsync({ _id: actorId });
-      const anc = (target && target.org && target.org.ancestors) || [];
-      if (!caller.isAdmin && !anc.includes(me._id)) {
-        throw new Meteor.Error('forbidden', 'reach-down requires superior position');
-      }
-      actor = actorId;
-    }
+    // which stay bound to the real caller. Peers/strangers 403. (R68: shared
+    // forwardedActor() policy — secrets.api/files.api now mirror this.)
+    const actor = await forwardedActor(caller, method, actorId);
     const res = await fetch(`${MAIL_URL}${path}`, {
       method,
       headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN, 'X-Actor-Id': actor },
@@ -628,18 +702,14 @@ Meteor.methods({
     const caller = await Meteor.userAsync();
     if (!caller) throw new Meteor.Error('forbidden', 'login required');
     const SECRETS_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.private.secretsUrl) || 'http://127.0.0.1:8003';
+    // R68: forward only the intended secrets API contract (mail.api parity)
+    const pathname = path.split('?')[0];
+    const routeOk = SECRETS_ROUTES.some(([m, re]) => m === method && re.test(pathname));
+    if (!routeOk) throw new Meteor.Error('forbidden', 'unsupported secrets route');
+    // R68: mail.api's impersonation policy (shared forwardedActor) — writes
+    // NEVER impersonate; asActorId is read-only reach-down into own subtree.
+    const actor = await forwardedActor(caller, method, asActorId);
     let url = `${SECRETS_URL}${path}`;
-    const myId = (await myActor(caller) || {})._id || '';
-    let actor = myId;
-    if (asActorId && asActorId !== myId) {
-      // reach-down: ONLY allowed if I am above the target in the org
-      const target = await Actors.findOneAsync({ _id: asActorId });
-      const anc = (target && target.org && target.org.ancestors) || [];
-      if (!anc.includes(myId)) {
-        throw new Meteor.Error('forbidden', 'reach-down requires superior position');
-      }
-      actor = asActorId;
-    }
     url += (path.includes('?') ? '&' : '?') + `caller_id=${encodeURIComponent(actor)}`;
     const res = await fetch(url, {
       method,
@@ -662,6 +732,9 @@ Meteor.methods({
       throw new Meteor.Error('forbidden', 'admin only');
     }
     const RUNTIME_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.private.runtimeUrl) || 'http://127.0.0.1:8010';
+    // R68 drive-by: `actor` was undefined here (ReferenceError on every call) —
+    // forward the admin caller's own actor, proxy.admin's pattern.
+    const actor = ((await myActor(caller)) || {})._id || '';
     const res = await fetch(`${RUNTIME_URL}${path}`, {
       method,
       headers: { 'Content-Type': 'application/json', 'X-Service-Token': SERVICE_TOKEN, 'X-Actor-Id': actor },
@@ -678,27 +751,29 @@ Meteor.methods({
     const caller = await Meteor.userAsync();
     if (!caller) throw new Meteor.Error('forbidden', 'login required');
     const FILES_URL = (Meteor.settings && Meteor.settings.private && Meteor.settings.private.filesUrl) || 'http://127.0.0.1:8004';
+    // R68: forward only the intended files API contract (mail.api parity).
+    // UPLOAD is the web tier's multipart alias for POST /files — still a write.
+    const pathname = path.split('?')[0];
+    const effMethod = method === 'UPLOAD' ? 'POST' : method;
+    const routeOk = FILES_ROUTES.some(([m, re]) => m === effMethod && re.test(pathname));
+    if (!routeOk) throw new Meteor.Error('forbidden', 'unsupported files route');
+    // R68: mail.api's impersonation policy (shared forwardedActor) — writes
+    // NEVER impersonate; asActorId is read-only reach-down into own subtree.
+    const actor = await forwardedActor(caller, effMethod, asActorId);
     let url = `${FILES_URL}${path}`;
-    const myId = (await myActor(caller) || {})._id || '';
-    let actor = myId;
-    if (asActorId && asActorId !== myId) {
-      const target = await Actors.findOneAsync({ _id: asActorId });
-      const anc = (target && target.org && target.org.ancestors) || [];
-      if (!anc.includes(myId)) {
-        throw new Meteor.Error('forbidden', 'reach-down requires superior position');
-      }
-      actor = asActorId;
-    }
     if (method === 'UPLOAD') {
       // File objects can't cross the Meteor method boundary — arrive as
       // {name, type, b64}; rebuild a Blob and multipart it server-side.
+      // R68 drive-by: X-Actor-Id was missing here, so the central tier was
+      // anonymous and every upload died with
+      // 400 "X-Actor-Id required for central tier".
       const { name, type, b64 } = body;
       const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
       const fd = new FormData();
       fd.append('file', new Blob([bytes], { type: type || 'application/octet-stream' }), name);
       const res = await fetch(`${FILES_URL}/files${url.includes('?') ? '&' : '?'}caller_id=${encodeURIComponent(actor)}`, {
         method: 'POST',
-        headers: { 'X-Service-Token': SERVICE_TOKEN },
+        headers: { 'X-Service-Token': SERVICE_TOKEN, 'X-Actor-Id': actor },
         body: fd,
       });
       const data = await res.json().catch(() => ({}));
