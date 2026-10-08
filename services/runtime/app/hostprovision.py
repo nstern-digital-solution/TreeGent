@@ -263,6 +263,43 @@ def _central_commit(full: bool = False) -> str:
         return "?"
 
 
+def _central_origin_ahead(cache_s: int = 300) -> int:
+    """R71: how many commits origin/main is AHEAD of this box (git fetch +
+    rev-list count). The shared server itself being behind is exactly the
+    state the navbar red dot must catch — hosts are compared against
+    CENTRAL, but central is compared against ORIGIN. Cached 5 min so the
+    60s health loop doesn't hammer GitHub; -1 = check failed (unknown)."""
+    import time as _time
+    now = _time.time()
+    global _origin_ahead_cache
+    try:
+        _origin_ahead_cache
+    except NameError:
+        _origin_ahead_cache = {"ts": 0.0, "val": 0}
+    if now - _origin_ahead_cache["ts"] < cache_s:
+        return _origin_ahead_cache["val"]
+    here = os.path.abspath(__file__)
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(here))))
+    val = -1
+    try:
+        subprocess.run(["git", "-C", repo, "fetch", "origin", "main"],
+                       capture_output=True, timeout=30)
+        subprocess.run(["git", "-c", f"safe.directory={repo}", "-C", repo,
+                        "fetch", "origin", "main"],
+                       capture_output=True, timeout=30)
+        out = subprocess.run(
+            ["git", "-c", f"safe.directory={repo}", "-C", repo, "rev-list",
+             "--count", "HEAD..origin/main"],
+            capture_output=True, timeout=10)
+        if out.returncode == 0:
+            val = int(out.stdout.decode().strip() or 0)
+    except Exception:  # noqa: BLE001 — never break list_hosts on git issues
+        val = -1
+    _origin_ahead_cache.update(ts=now, val=val)
+    return val
+
+
 def _central_commit_short() -> str:
     sha = _central_commit(full=True)
     return sha[:7] if sha not in ("?", "") else "?"

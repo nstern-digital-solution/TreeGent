@@ -14,6 +14,7 @@ import { SecretsPane } from './SecretsPane.jsx';
 import { FilesPane } from './FilesPane.jsx';
 import { AgentsPane } from './AgentsPane.jsx';
 import { HostsPane } from './HostsPane.jsx';
+import { HostsAlertDot } from './HostsAlertDot.jsx';
 
 export function App() {
   const user = useTracker(() => Meteor.user(), []);
@@ -48,7 +49,9 @@ export function App() {
           {isAdmin && <button className={`tab ${tab === 'admin' ? 'on' : ''}`} onClick={() => setTab('admin')}>Admin</button>}
           {isAdmin && <button className={`tab ${tab === 'usage' ? 'on' : ''}`} onClick={() => setTab('usage')}>Usage</button>}
           {isAdmin && <button className={`tab ${tab === 'models' ? 'on' : ''}`} onClick={() => setTab('models')}>Models</button>}
-          {isAdmin && <button className={`tab ${tab === 'hosts' ? 'on' : ''}`} onClick={() => setTab('hosts')}>Hosts</button>}
+        {isAdmin && <button className={`tab ${tab === 'hosts' ? 'on' : ''}`} onClick={() => setTab('hosts')} title="hosts — red dot = a host (or the central server) is not on the latest version">
+            Hosts <HostsAlertDot />
+          </button>}
           <button className={`tab ${tab === 'approvals' ? 'on' : ''}`} onClick={() => setTab('approvals')}>Approvals</button>
           <button className={`tab ${tab === 'mail' ? 'on' : ''}`} onClick={() => setTab('mail')}>Mail</button>
           <button className={`tab ${tab === 'secrets' ? 'on' : ''}`} onClick={() => setTab('secrets')}>Secrets</button>

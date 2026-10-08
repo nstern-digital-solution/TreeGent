@@ -143,10 +143,14 @@ async def list_hosts(x_service_token: str = Header(default="")):
                     "address": h.get("address"), "port": h.get("port", 22),
                     "ssh_user": h.get("ssh_user", "root"),
                     "status": h.get("status", "unknown"),
+                    "host_version_short": h.get("host_version_short", ""),
+                    "uptime": h.get("uptime_s"), "load1": h.get("load1"),
+                    "last_seen": h.get("last_seen"),
                     "last_log": (h.get("last_log") or "")[-800:],
                     "provisioned_at": h.get("provisioned_at")})
-    from .hostprovision import _central_commit
-    return {"hosts": out, "central_version": _central_commit()[:7]}
+    from .hostprovision import _central_commit, _central_origin_ahead
+    return {"hosts": out, "central_version": _central_commit()[:7],
+            "central_behind": _central_origin_ahead()}
 
 
 @app.post("/internal/hosts", status_code=201)
