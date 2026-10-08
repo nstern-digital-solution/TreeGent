@@ -34,8 +34,11 @@ from datetime import datetime, timezone
 
 COMPACT_ENTRY_MAX = 4000      # Felix: max chars per summary entry
 COMPACT_FANOUT = 4            # Felix: 4 entries on a level -> 1 above
-COMPACT_TRIGGER_CHARS = 96_000  # chatlog non-system chars above which we compact
-COMPACT_TRIGGER_MSGS = 160     # near _sanitize's 200-msg tail-cap (count path)
+# Felix 2026-10-08: modern models carry ~1M-token windows — compact at
+# 200k-400k tokens. Trigger 1.2M chars (~300k tokens); the oldest half is
+# summarized away each time (~150k tokens removed per compaction).
+COMPACT_TRIGGER_CHARS = 1_200_000
+COMPACT_TRIGGER_MSGS = 400    # count path; below _sanitize's 500-msg ceiling
 QTREE_DIR = "memory/qtree"
 
 _SUMMARY_PROMPT = """You maintain episodic memory for an autonomous agent. \
@@ -203,7 +206,7 @@ def needs_compaction(messages: list[dict]) -> bool:
     """True when the chatlog needs compacting: either non-system chars
     exceed COMPACT_TRIGGER_CHARS, or the message COUNT is near the
     _sanitize tail-cap (short-message sessions would otherwise hit the
-    200-message cap with NO summary — information must never silently
+    500-message cap with NO summary — information must never silently
     leave the context)."""
     non_sys = [m for m in messages if m.get("role") != "system"]
     if sum(len(m.get("content") or "") for m in non_sys) > COMPACT_TRIGGER_CHARS:

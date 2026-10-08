@@ -7,7 +7,7 @@ Compaction points:
      the live messages. Nothing silently disappears anymore.
   2. CONTEXT BLOCK — soul_block() appends the qtree view (newest entry of
      every level), so every generation carries all coarseness levels.
-  3. RESTORE — _sanitize already tail-caps at 200 messages; the qtree
+  3. RESTORE — _sanitize tail-caps at 500 messages; the qtree
      context block covers whatever fell outside that window long-term.
 
 Summary generations go through the same proxy job queue (class "task" —

@@ -88,11 +88,11 @@ def test_context_block():
 
 def test_needs_compaction():
     msgs = [{"role": "system", "content": "s" * 50000},
-            {"role": "user", "content": "u" * 40000},
-            {"role": "assistant", "content": "a" * 40000}]
-    assert not qtree.needs_compaction(msgs)   # 80k < 96k
-    msgs.append({"role": "user", "content": "u" * 20000})
-    assert qtree.needs_compaction(msgs)       # 100k > 96k
+            {"role": "user", "content": "u" * 400000},
+            {"role": "assistant", "content": "a" * 400000}]
+    assert not qtree.needs_compaction(msgs)   # 800k < 1.2M
+    msgs.append({"role": "user", "content": "u" * 500000})
+    assert qtree.needs_compaction(msgs)       # 1.3M > 1.2M
     print("PASS trigger threshold")
 
 
@@ -117,16 +117,16 @@ if __name__ == "__main__":
 
 
 def test_count_trigger():
-    """Short-message sessions compact on COUNT before _sanitize's 200 cap."""
+    """Short-message sessions compact on COUNT before _sanitize's 500 cap."""
     gen = fake_gen_factory([])
     ws = tempfile.mkdtemp(prefix="qtree6")
     msgs = [{"role": "system", "content": "sys"}]
-    for i in range(170):   # 170 non-system msgs, tiny chars
+    for i in range(410):   # 410 non-system msgs, tiny chars
         msgs.append({"role": "user", "content": f"m{i}"})
     assert qtree.needs_compaction(msgs), "count path must fire"
     small = msgs[:20]
     assert not qtree.needs_compaction(small)
-    print("PASS count trigger: 170 msgs fires, 19 does not")
+    print("PASS count trigger: 410 msgs fires, 19 does not")
 
 
 def test_compact_maybe_both_paths():
@@ -146,11 +146,11 @@ def test_compact_maybe_both_paths():
 
     # count path: many tiny messages
     msgs = [{"role": "system", "content": "s"}]
-    for i in range(200):
+    for i in range(500):
         msgs.append({"role": "user", "content": f"tiny {i}"})
     a = StubAgent(msgs)
     C._gen = ok_gen
     stats = asyncio.run(C.maybe_compact(a))
     kept = len(a.messages) - 1
     print("PASS maybe_compact count path:", stats, "kept", kept, "regen:", a.regened)
-    assert stats.get("entries") == 1 and kept < 200
+    assert stats.get("entries") == 1 and kept < 500

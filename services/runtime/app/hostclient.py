@@ -96,7 +96,7 @@ def session_path(workspace: str) -> Path:
     return p
 
 
-def _sanitize(messages: list[dict], max_messages: int = 200) -> list[dict]:
+def _sanitize(messages: list[dict], max_messages: int = 500) -> list[dict]:
     """Heal the failure-storm bloat: a dead provider used to leave
     hundreds of identical user lines (re-appended unread backlogs and
     '[generation failed]' retry stubs). Drop failure stubs, keep only
@@ -127,7 +127,9 @@ def _sanitize(messages: list[dict], max_messages: int = 200) -> list[dict]:
     # Context budget: cap TOTAL chars so accumulation without compaction
     # can't explode again. The SYSTEM prompt is never elided; the rest is
     # trimmed oldest-first until the non-system content fits the budget.
-    budget = 160_000   # chars (~40k tokens) — generous, but bounded
+    # 2M chars ~ 500k tokens: comfortably above the 1.2M-char compaction
+    # trigger (R73) — this ceiling only catches a compaction failure.
+    budget = 2_000_000
     syslen = len(system_msg.get("content") or "") if system_msg else 0
     pre_budget = len(tail)
     while (sum(len(m.get("content") or "") for m in tail)
