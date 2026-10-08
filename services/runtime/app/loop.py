@@ -68,6 +68,11 @@ class Agent:
         self.hc = HOST
         self._pending_inbox_ids: list[str] = []
         self._pending_wake_ids: list[str] = []
+        # R68: central-mode counterpart of the id lists above — the central
+        # ack path is blanket (agent-inbox-delivered + mark all unconsumed),
+        # but the safety net still needs to know a failed turn left work
+        # unconsumed (it used to fire for hosted rows only).
+        self._pending_central = False
         self._turn_lines: list[dict] = []       # R57: transcript lines this turn
 
     def _base_prompt(self) -> str:
@@ -203,6 +208,7 @@ before guessing parameters. Prefer the narrow tool over the broad one
             params={"agent_id": self.id})
         n = len(inbox.get("messages", []))
         if n:
+            self._pending_central = True   # R68: ack-mark BEFORE building
             # R14 verbatim: notification only — the agent pulls content via
             # chat.check (async messaging; bodies never ride in context)
             lines.append(f"You have {n} new message(s) waiting — use "
@@ -212,6 +218,10 @@ before guessing parameters. Prefer the narrow tool over the broad one
             {"agent_id": self.id, "consumed": False,
              "reason": {"$in": ["mail", "approval", "approval-rejected"]}})
             .sort("created_at", 1).limit(10)]
+        if wakes:
+            self._pending_central = True   # R68: ...so a raise mid-collect
+            # still reaches the ack safety net (was: central failed turns
+            # re-polled the same wake every 5s forever)
         for w in wakes:
             if w["reason"] == "mail":
                 mail = await _cdb().mail_messages.find_one(
@@ -269,6 +279,7 @@ before guessing parameters. Prefer the narrow tool over the broad one
     async def _mark_consumed(self) -> None:
         """R43-safe: only after the turn survived. Called from run_turn
         success path — a crashed turn re-injects its events next poll."""
+        self._pending_central = False
         if self.hc is not None:
             await self.hc.delivered(self.id, self._pending_inbox_ids,
                                     self._pending_wake_ids)
@@ -360,7 +371,11 @@ before guessing parameters. Prefer the narrow tool over the broad one
                 self._refresh_soul()   # R50: operator/agent edits apply live
                 job = {"class_name": "agent", "reason": trigger,
                        "messages": self.messages,
-                       "tools": T.TOOL_SCHEMAS, "max_tokens": 2048}
+                       # R68: the closing generation advertises NO tools —
+                       # calls returned into it are discarded, so a model
+                       # that reaches for tools here ended the turn EMPTY
+                       "tools": [] if closing else T.TOOL_SCHEMAS,
+                       "max_tokens": 2048}
                 sub = await self.svcs._call(settings.proxy_url, "/v1/jobs",
                                             "POST", body=job)
                 # R32: exactly one in flight; wait for completion
@@ -449,6 +464,14 @@ before guessing parameters. Prefer the narrow tool over the broad one
                 # plain answer (or closing generation) -> turn complete
                 if closing:
                     assistant.pop("tool_calls", None)   # closing: text only
+                    if not (assistant.get("content") or "").strip():
+                        # R68: the 'guaranteed' status reply must never be
+                        # empty — synthesize one from turn bookkeeping
+                        reason_txt = close_reason or "failure breaker"
+                        assistant["content"] = (
+                            f"[turn closed: {reason_txt}] after {steps} "
+                            f"step(s) — the model returned no final text. "
+                            f"Resume from the last tool results above.")
                 self.messages.append(assistant)
                 final_text = assistant.get("content", "") or ""
                 self._turn_lines.append({
@@ -509,17 +532,18 @@ before guessing parameters. Prefer the narrow tool over the broad one
                         "final": final_text[:4000],
                         "started": started.isoformat(),
                         "ended": now().isoformat()})
-
-
-        # wake/inbox safety net: if the turn ENDED (even via the generation-
-        # failed branch) without consuming, consume now — a dead proxy must
-        # never retrigger the same wake every 5s forever
-        if trigger == "event" and (self._pending_inbox_ids
-                                   or self._pending_wake_ids):
-            try:
-                await self._mark_consumed()
-            except Exception as e:  # noqa: BLE001
-                print(f"[turn] {self.name} ack safety net failed: {e}")
+            # wake/inbox safety net (R68: BOTH tiers, and on CRASHED turns —
+            # it ran after the try/finally before, so an exception skipped
+            # it): if the turn ended without consuming — failed generation,
+            # raise mid-collect, whatever — consume now. A dead proxy must
+            # never retrigger the same wake every 5s forever.
+            if trigger == "event" and (self._pending_inbox_ids
+                                       or self._pending_wake_ids
+                                       or self._pending_central):
+                try:
+                    await self._mark_consumed()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[turn] {self.name} ack safety net failed: {e}")
 
     async def _exec_tool(self, fn: str, args: dict) -> str:
         f = T.TOOLS.get(fn)

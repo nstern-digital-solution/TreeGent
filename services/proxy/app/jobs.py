@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from . import db
+from .dispatcher import stale_cutoff
 
 router = APIRouter(prefix="/v1", tags=["jobs"])
 
@@ -81,9 +82,14 @@ async def priority(agent_id: str, reason: str) -> float:
 async def submit_job(body: JobIn, agent: dict = Depends(auth_agent)) -> dict:
     aid = agent["agent_id"]
 
-    # R32 serialization: reject a second in-flight job per agent
-    inflight = await db.jobs.count_documents(
-        {"agent_id": aid, "status": {"$in": ["queued", "dispatched"]}})
+    # R32 serialization: reject a second in-flight job per agent.
+    # R68: only RECENT dispatched rows count as in flight — a stale one is
+    # an orphan from a crash (age-tolerant; the sweep/startup requeues it)
+    # and must not lock the agent out of new submissions forever.
+    inflight = await db.jobs.count_documents({
+        "agent_id": aid,
+        "$or": [{"status": "queued"},
+                {"status": "dispatched", "dispatched_at": {"$gte": stale_cutoff()}}]})
     if inflight:
         raise HTTPException(409, "agent already has an in-flight generation "
                                  "(R32: one at a time; queue at the turn level)")

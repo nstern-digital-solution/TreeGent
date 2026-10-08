@@ -3,12 +3,15 @@ derive caller identity from the key server-side (R45) — an agent can never
 act as anyone else. Untrusted content (mail bodies, chat messages) enters
 the transcript only as clearly-delimited DATA inside tool results."""
 import asyncio
+import ipaddress
 import json
 import os
 import re
+import socket
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urljoin, urlsplit
 import time
 
 import httpx
@@ -54,6 +57,46 @@ def safe_ws_path(workspace: str, rel: str) -> str:
     if not (p == root or p.startswith(root + os.sep)):
         raise PermissionError(f"path escapes workspace: {rel!r}")
     return p
+
+
+# ---------------- SSRF guard (R68): no fetches into private space ---------
+
+def _url_allowed(host: str) -> bool:
+    """True when EVERY address the host resolves to is public. Rejects
+    loopback, link-local (incl. 169.254.169.254 metadata), RFC1918,
+    unique-local and other reserved space. TG_WEB_FETCH_ALLOW_PRIVATE=1
+    is the dev/rehearsal escape hatch (the rehearsal fetches localhost)."""
+    if os.environ.get("TG_WEB_FETCH_ALLOW_PRIVATE", "") == "1":
+        return True
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False          # unresolvable -> deny (fail closed)
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (ip.is_loopback or ip.is_link_local or ip.is_private
+                or ip.is_reserved or ip.is_multicast
+                or ip.is_unspecified):
+            return False
+    return True
+
+
+def _fetch_url_allowed(url: str) -> str | None:
+    """Pre-request SSRF check for a URL: ERROR string when denied, else None."""
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return "ERROR: malformed URL"
+    if not host:
+        return "ERROR: URL has no host"
+    if not _url_allowed(host):
+        return (f"ERROR: fetch denied — {host} resolves inside "
+                f"loopback/link-local/private space (SSRF guard; "
+                f"TG_WEB_FETCH_ALLOW_PRIVATE=1 allows it on a dev box)")
+    return None
 
 
 # ---------------- tool implementations ----------------
@@ -333,8 +376,22 @@ async def t_web_fetch(ctx: ToolContext, args: dict) -> str:
     url = args["url"]
     if not re.match(r"^https?://", url):
         return "ERROR: http(s) URL required"
-    async with httpx.AsyncClient(timeout=45, follow_redirects=True) as c:
-        r = await c.get(url, headers={"User-Agent": "TreeGentAgent/0.1"})
+    async with httpx.AsyncClient(timeout=45, follow_redirects=False) as c:
+        # R68: redirects are followed MANUALLY — every hop is re-validated
+        # against the SSRF deny-list (auto-follow would let a public URL
+        # bounce the request at 127.0.0.1/metadata and return the result)
+        for _ in range(6):
+            err = _fetch_url_allowed(url)
+            if err:
+                return err
+            r = await c.get(url, headers={"User-Agent": "TreeGentAgent/0.1"})
+            loc = r.headers.get("location")
+            if r.status_code in (301, 302, 303, 307, 308) and loc:
+                url = urljoin(str(r.url), loc)
+                continue
+            break
+        else:
+            return "ERROR: too many redirects"
     if r.status_code != 200:
         return f"ERROR: HTTP {r.status_code}"
     html = r.text
@@ -504,6 +561,9 @@ def _sync_browser_action(workspace: str, action: str, args: dict) -> str:
             url = args.get("url") or ""
             if not re.match(r"^https?://", url):
                 return "ERROR: http(s) URL required"
+            err = _fetch_url_allowed(url)   # R68: SSRF guard before goto
+            if err:
+                return err
             page.goto(url, wait_until="load")
             return _browser_state(page)
         if action == "text":
@@ -561,8 +621,14 @@ async def t_browser(ctx: ToolContext, args: dict) -> str:
     across turns)."""
     action = args.get("action") or ""
     if action not in ("open", "text", "click", "type", "screenshot", "close"):
-        return ("ERROR: need 'action' = open | text | click | type | "
+        return (f"ERROR: need 'action' = open | text | click | type | "
                 f"screenshot | close; got {action!r}")
+    if action == "open":
+        # R68: deny BEFORE the browser even launches (the sync path would
+        # spin up Chromium first and only then validate)
+        err = _fetch_url_allowed(args.get("url") or "")
+        if err:
+            return err
     try:
         # blocking Playwright work stays off the async loop; 45s hard backstop
         # above the ~30s per-action Playwright timeouts
