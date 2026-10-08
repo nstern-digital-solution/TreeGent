@@ -175,7 +175,9 @@ def line_for(summary: str, stamp: str) -> str:
 
 def context_block(workspace: str, budget: int = 6000) -> str:
     """The always-in-context view: newest entry of every level, fine→coarse.
-    Fits `budget` chars by trimming the OLDEST coarse levels first."""
+    Fits `budget` chars by trimming the COARSEST levels first — the recent
+    fine-grained entry (L0) is always the last thing to go (issue #5: the
+    trim used to drop L0 first and keep ancient digests — backwards)."""
     meta = load_meta(workspace)
     if not meta:
         return ""
@@ -186,18 +188,18 @@ def context_block(workspace: str, budget: int = 6000) -> str:
             # newest entry of the level, minus the leading "- [ts] "
             body = entries[-1]
             body = re.sub(r"^- \[[^\]]+\] ", "", body)
-            n = len(entries)
-            tag = (f"recent (1 of {n})" if level == 0
-                   else f"~{level * 4} compactions ago (1 of {n})")
+            # an L(n) entry summarizes 4^n L0 compactions (fanout 4)
+            tag = ("recent" if level == 0
+                   else f"~{4 ** level} compactions ago")
             lines.append(f"[{tag}] {body}")
     text = "\n".join(lines)
     if len(text) > budget:
-        # keep the FINE levels (bottom lines, freshest); drop coarse lines
-        # from the TOP (oldest eras) until it fits
+        # lines are fine→coarse: L0 FIRST, coarsest LAST. Drop from the
+        # END (coarsest, oldest era) until it fits — L0 is never dropped
+        # while more than one line remains.
         parts = text.splitlines()
         while len(parts) > 1 and len("\n".join(parts)) > budget:
-            # drop the longest coarse line first (level 0 is last — safe)
-            parts.pop(0)
+            parts.pop()
         text = "\n".join(parts)
     return text
 

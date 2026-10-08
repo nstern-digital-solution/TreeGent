@@ -88,12 +88,19 @@ def _read(path: str) -> str:
 
 _SOUL_RE = re.compile(r"<soul>.*?</soul>\s*", re.DOTALL)
 _MEMORY_RE = re.compile(r"<memory>.*?</memory>\s*", re.DOTALL)
+# R70's episodic block is a SEPARATE top-level part — it must be stripped
+# symmetrically or every _refresh_soul() step accumulates another copy
+# (issue #4: ~50 copies per 50-step turn, unbounded system-prompt growth)
+_EPISODIC_RE = re.compile(
+    r"<episodic-memory[^>]*>.*?</episodic-memory>\s*", re.DOTALL)
 
 
 def strip_soul(body: str) -> str:
-    """Remove previously injected soul/memory blocks from a system body."""
+    """Remove previously injected soul/memory/episodic blocks from a
+    system body (must stay symmetric with soul_block's output)."""
     body = _SOUL_RE.sub("", body)
     body = _MEMORY_RE.sub("", body)
+    body = _EPISODIC_RE.sub("", body)
     return body.strip()
 
 
