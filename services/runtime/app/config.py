@@ -41,11 +41,21 @@ class Settings(BaseSettings):
     host_key: str = Field(default="",
                       validation_alias=AliasChoices("TG_RUNTIME_HOST_KEY", "TG_HOST_KEY"))
     # (TG_RUNTIME_EXEC_ENABLED shared name handled by prefix already)
-    max_turn_steps: int = Field(default=24,   # tool-call steps per turn before
-                               # forced stop (R63e: cap now ends with a closing
-                               # status generation instead of silence)
+    max_turn_steps: int = Field(default=0,    # R64: 0 = UNLIMITED steps;
+                               # runaway protection moved to failure-pattern
+                               # breakers below. Set >0 only for an explicit
+                               # hard cap.
                                validation_alias=AliasChoices(
                                    "TG_RUNTIME_MAX_TURN_STEPS"))
+    max_consec_failures: int = Field(default=24,   # R64: N consecutive FAILED
+                               # tool calls (ERROR: results) -> close the turn
+                               validation_alias=AliasChoices(
+                                   "TG_RUNTIME_MAX_CONSEC_FAILURES"))
+    max_identical_steps: int = Field(default=8,    # R64: the SAME tool call
+                               # (name+args) N times in a row unchanged ->
+                               # stuck loop, close the turn
+                               validation_alias=AliasChoices(
+                                   "TG_RUNTIME_MAX_IDENTICAL_STEPS"))
     search_backend: str = ""           # "" = web search disabled (R42)
 
     model_config = {"env_prefix": "TG_RUNTIME_", "env_file": ".env", "extra": "ignore"}

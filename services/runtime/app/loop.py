@@ -346,8 +346,16 @@ before guessing parameters. Prefer the narrow tool over the broad one
                 sender = last.split(" from ", 1)[1].split(" received at", 1)[0]
                 self._reply_ctx = {"sender": sender}
 
-            closing = False     # R63e: one final generation after the step cap
-            while steps < settings.max_turn_steps or closing:
+            closing = False     # R64 closing: failure breakers / explicit cap
+            consec_fail = 0     # consecutive tool calls returning ERROR:
+            last_call_sig = None   # (fn, canonical-args) to detect loops
+            same_sig_count = 0
+            close_reason = ""
+            # R64: no step cap by default (max_turn_steps=0 = unlimited).
+            # The turn closes on FAILURE PATTERNS instead — or the model
+            # answering without tool calls, as always.
+            while (settings.max_turn_steps <= 0 or steps < settings.max_turn_steps) \
+                    or closing:
                 steps += 1
                 self._refresh_soul()   # R50: operator/agent edits apply live
                 job = {"class_name": "agent", "reason": trigger,
@@ -391,6 +399,18 @@ before guessing parameters. Prefer the narrow tool over the broad one
                         except json.JSONDecodeError:
                             args = {}
                         tool_msg = await self._exec_tool(fn, args)
+                        # R64 failure-pattern tracking
+                        is_err = tool_msg.startswith("ERROR:")
+                        if is_err:
+                            consec_fail += 1
+                        else:
+                            consec_fail = 0
+                        sig = (fn, json.dumps(args, sort_keys=True))
+                        if sig == last_call_sig:
+                            same_sig_count += 1
+                        else:
+                            same_sig_count = 1
+                            last_call_sig = sig
                         self.messages.append(
                             {"role": "tool", "tool_call_id": c.get("id", fn),
                              "content": tool_msg[:8000]})
@@ -399,20 +419,31 @@ before guessing parameters. Prefer the narrow tool over the broad one
                             "content": tool_msg[:4000],
                             "meta": {"tool": fn, "args": args,
                                      "call_id": c.get("id", fn)}})
-                    if steps >= settings.max_turn_steps:
-                        # R63e: step budget exhausted MID-JOB — never end
-                        # silently: one final generation to close the turn
+                    hit_fail_cap = (consec_fail >= settings.max_consec_failures)
+                    hit_loop_cap = (same_sig_count >= settings.max_identical_steps)
+                    hit_step_cap = (settings.max_turn_steps > 0
+                                    and steps >= settings.max_turn_steps)
+                    if hit_fail_cap or hit_loop_cap or hit_step_cap:
+                        # R64: never end silently — one closing generation.
+                        if hit_fail_cap:
+                            close_reason = (f"{consec_fail} consecutive failed "
+                                            f"tool calls")
+                        elif hit_loop_cap:
+                            close_reason = (f"the same tool call repeated "
+                                            f"{same_sig_count} times unchanged")
+                        else:
+                            close_reason = (f"the step cap "
+                                            f"({settings.max_turn_steps})")
                         self.messages.append({"role": "user", "content":
-                            f"[turn limit reached: {settings.max_turn_steps} "
-                             f"tool steps. Finish now with a short status "
-                             f"reply: what you completed, what remains, and "
-                             f"the exact point to resume from. No more tool "
+                            f"[turn stopping: {close_reason}. You appear "
+                             f"stuck. Finish now with a short status reply: "
+                             f"what you completed, what remains, and the "
+                             f"exact point to resume from. No more tool "
                              f"calls this turn.]"})
                         self._turn_lines.append({
                             "ts": now().isoformat(), "role": "injection",
-                            "content": f"[turn limit reached after "
-                                       f"{settings.max_turn_steps} steps]",
-                            "meta": {"trigger": "turn-limit"}})
+                            "content": f"[turn stopped: {close_reason}]",
+                            "meta": {"trigger": "failure-breaker"}})
                         closing = True
                     continue  # next generation with tool results
                 # plain answer (or closing generation) -> turn complete
