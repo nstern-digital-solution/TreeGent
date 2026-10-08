@@ -32,8 +32,6 @@ class Settings(BaseSettings):
     chat_url: str = "http://127.0.0.1:8000"
     mail_domain: str = Field(default="treegent.local",
                           validation_alias=AliasChoices("TG_MAIL_DOMAIN"))  # deployment data
-    resend_webhook_secret: str = Field(default="",
-                          validation_alias=AliasChoices("TG_RESEND_WEBHOOK_SECRET"))
 
     model_config = {"env_prefix": "TG_MAIL_", "env_file": ".env", "extra": "ignore"}
 

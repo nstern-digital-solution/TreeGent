@@ -59,6 +59,13 @@ async def list_mailboxes(caller_id: str = "",
     of. Auth REQUIRED (agent key or service token, R45): key-derived
     identity wins over any caller_id param."""
     aid = _c["_id"]                 # key-derived identity, never param trust
+    # R67: pull-through — sync new inbound mail from Resend before listing.
+    # Best-effort: a Resend outage degrades to the local cache, never a 500.
+    try:
+        await adapters.sync_inbound()
+    except Exception as e:  # noqa: BLE001
+        print(f"[mail] inbound sync failed (serving cache): "
+              f"{type(e).__name__}: {str(e)[:150]}", flush=True)
     p = await principal_for(db, aid)
     out = []
     async for mb in mailboxes.find():
@@ -88,6 +95,12 @@ async def list_messages(mbx_id: str, limit: int = 50,
     if not mb:
         raise HTTPException(404, "no such mailbox")
     aid = _c["_id"]
+    # R67: pull-through — sync this mailbox's new mail before reading
+    try:
+        await adapters.sync_inbound([mb["address"]])
+    except Exception as e:  # noqa: BLE001
+        print(f"[mail] inbound sync failed (serving cache): "
+              f"{type(e).__name__}: {str(e)[:150]}", flush=True)
     if mb["kind"] == "personal" and mb.get("owner") != aid:
         raise HTTPException(403, "not your mailbox")
     if mb["kind"] == "shared" and aid not in mb.get("members", []):
@@ -267,71 +280,6 @@ async def inbound_hook(address: str, from_addr: str, subject: str,
     inbound arrives via the Resend webhook below."""
     return await adapters.ingest_inbound(address, from_addr, subject,
                                          text, html)
-
-
-# ---------------- R38: Resend inbound webhook ----------------
-
-class InboundConfig(BaseModel):
-    webhook_secret: str = ""      # shared secret (?secret=... on the URL)
-
-
-@router.post("/resend/inbound")
-async def resend_inbound(request: Request, secret: str = ""):
-    """External webhook — authenticated by a shared secret in the URL
-    (?secret=<TG_RESEND_WEBHOOK_SECRET>), NOT by internal tokens: Resend
-    is an outside caller and holds no TreeGent credentials."""
-    from .config import settings as _s
-    want = getattr(_s, "resend_webhook_secret", "") or ""
-    if not want:
-        # R65: refuse LOUDLY — a silent 200 made Resend's dashboard show
-        # "delivered" while we stored nothing. 503 -> Resend retries, and
-        # the journal shows every dropped attempt.
-        print("[mail] DROPPED inbound webhook: TG_RESEND_WEBHOOK_SECRET "
-              "is not set — add it to /opt/TreeGent/.env and restart",
-              flush=True)
-        raise HTTPException(
-            503, "webhook not configured: set TG_RESEND_WEBHOOK_SECRET")
-    if secret != want:
-        raise HTTPException(403, "bad webhook secret")
-    """Resend inbound-mail webhook. In Resend's dashboard point the
-    inbound domain's webhook at:  https://<host>/mail/resend/inbound
-    ...and set the same ?secret= value in TG_RESEND_WEBHOOK_SECRET.
-    Verifies Resend's signature when configured, then routes the mail
-    into the matching mailbox (agent wake included)."""
-    import json as _json
-    body = await request.json()
-    # Resend email.received: { type, data: { to: [...], from, subject,
-    # email_id, ... } } — METADATA ONLY (docs: body/headers/attachments are
-    # not included; fetch via GET /emails/{email_id}/received). Older/spec
-    # variants nesting under data.email are still accepted.
-    d = (body.get("data") or {})
-    if d.get("type") == "email.received" or body.get("type") == "email.received":
-        d = d.get("data") or d
-    email = d.get("email") or {}
-    to_raw = d.get("to") or email.get("to") or []
-    if isinstance(to_raw, str):
-        to_raw = [to_raw]
-    to_addr = (to_raw[0] if to_raw else "").strip().lower()
-    from_addr = (d.get("from") or email.get("from") or "").strip()
-    subject = d.get("subject") or email.get("subject") or ""
-    text = email.get("text") or d.get("text") or ""
-    html = email.get("html") or d.get("html") or ""
-    if not to_addr:
-        return {"delivered": False, "reason": "no recipient in webhook"}
-    # the webhook carries no body — fetch it (best effort; metadata-only
-    # delivery is still better than dropping the mail)
-    email_id = d.get("email_id") or email.get("id") or ""
-    if email_id and not text and not html:
-        try:
-            fetched = await adapters.fetch_received_email(email_id)
-            text = text or fetched.get("text") or ""
-            html = html or fetched.get("html") or ""
-        except Exception as e:  # noqa: BLE001 — body fetch is best-effort
-            text = f"[body unavailable: {str(e)[:120]}]"
-    r = await adapters.ingest_inbound(to_addr, from_addr, subject,
-                                      text, html)
-    return r
-
 
 
 @router.get("/adapters",
