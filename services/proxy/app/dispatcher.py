@@ -25,6 +25,29 @@ def now():
     return datetime.now(timezone.utc)
 
 
+# R68: a job stranded in 'dispatched' (crash mid-flight) is never picked up
+# again (the worker scans queued-only) and the agent's next submission 409s
+# forever. Older than this = orphaned; the runtime's own job poll window is
+# 10 min, so nothing legitimate is still running past ~15 min.
+STALE_DISPATCHED_S = 900
+
+def stale_cutoff():
+    return now() - timedelta(seconds=STALE_DISPATCHED_S)
+
+
+async def requeue_stale(reason: str = "startup") -> int:
+    """Reset orphaned dispatched jobs to queued (attempt count preserved —
+    $inc keeps the history instead of wiping it)."""
+    res = await db.jobs.update_many(
+        {"status": "dispatched", "dispatched_at": {"$lt": stale_cutoff()}},
+        {"$set": {"status": "queued", "dispatched_at": None},
+         "$inc": {"attempts": 1}})
+    n = getattr(res, "modified_count", 0)
+    if n:
+        print(f"[dispatcher] requeued {n} stale dispatched job(s) ({reason})")
+    return n
+
+
 # ---------------- provider plumbing ----------------
 
 def provider_key(provider_doc: dict) -> str:
@@ -257,6 +280,7 @@ async def process_job(job: dict):
 
 async def worker_loop():
     """Single dispatcher loop: always take the highest-priority queued job."""
+    last_sweep = 0.0
     while True:
         try:
             job = await db.jobs.find_one_and_update(
@@ -265,6 +289,10 @@ async def worker_loop():
                 sort=[("prio", -1), ("created_at", 1)],
             )
             if not job:
+                # R68: idle-time sweep — heal orphans even without a restart
+                if time.monotonic() - last_sweep > 30:
+                    last_sweep = time.monotonic()
+                    await requeue_stale("idle sweep")
                 await asyncio.sleep(0.25)
                 continue
             await process_job(job)

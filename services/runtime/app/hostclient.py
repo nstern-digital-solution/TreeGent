@@ -109,23 +109,28 @@ def _sanitize(messages: list[dict], max_messages: int = 200) -> list[dict]:
                 continue        # duplicate delivery (re-ack race / spin)
             seen_users.add(content)
         out.append(m)
-    tail = out[-max_messages:]
+    # R68: extract the system prompt FIRST, then tail-cap the REST. The old
+    # order (tail-cap, then find system in the tail) dropped the system
+    # message entirely on 200+ message sessions — and R50 regeneration only
+    # replaces a LEADING system message, so the soul-refresh path then
+    # rewrote a conversation message at index 0 instead.
+    system_msg = out[0] if out and out[0].get("role") == "system" else None
+    body = out[1:] if system_msg is not None else out
+    room = max_messages - (1 if system_msg is not None else 0)
+    tail = body[-room:] if room > 0 else []
     # Context budget: cap TOTAL chars so accumulation without compaction
     # can't explode again. The SYSTEM prompt is never elided; the rest is
     # trimmed oldest-first until the non-system content fits the budget.
     budget = 160_000   # chars (~40k tokens) — generous, but bounded
-    system = [m for m in tail if m.get("role") == "system"]
-    body = [m for m in tail if m.get("role") != "system"]
-    syslen = sum(len(m.get("content") or "") for m in system)
-    while (sum(len(m.get("content") or "") for m in body)
-           + syslen) > budget and len(body) > 2:
-        body = body[1:]
-    kept = system[:1] + body   # one system prompt, then conversation
-    if len(kept) < len(tail):
-        dropped = len(tail) - len(kept)
+    syslen = len(system_msg.get("content") or "") if system_msg else 0
+    pre_budget = len(tail)
+    while (sum(len(m.get("content") or "") for m in tail)
+           + syslen) > budget and len(tail) > 2:
+        tail = tail[1:]
+    if len(tail) < pre_budget:
         print("[context budget] dropped %d oldest message(s) to fit %d chars"
-              % (dropped, budget), file=sys.stderr)
-    return kept
+              % (pre_budget - len(tail), budget), file=sys.stderr)
+    return ([system_msg] if system_msg is not None else []) + tail
 
 
 def load_messages(workspace: str) -> list[dict]:

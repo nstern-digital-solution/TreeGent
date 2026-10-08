@@ -79,16 +79,21 @@ TG_FILES_S3_SECRET_KEY="$(prefill TG_FILES_S3_SECRET_KEY)"
 # Outbound mail via Resend — empty = dev sink (captured, not sent).
 TG_RESEND_API_KEY="$(prefill RESEND_API_KEY)"
 # mail domain: default = first verified Resend sending domain, else public URL host
+# (R68: this heredoc EXPANDS at write time under set -u — the block below is
+# escaped so it runs when this file is SOURCED, against the values you edit
+# here. Unescaped \$vars aborted the first-run template write with
+# 'unbound variable'.)
 TG_MAIL_DOMAIN="$(prefill TG_MAIL_DOMAIN)"
-if [ -z "$TG_MAIL_DOMAIN" ] && [ -n "$TG_RESEND_API_KEY" ]; then
-  TG_MAIL_DOMAIN="$(curl -fsS --max-time 10 -H "Authorization: Bearer $TG_RESEND_API_KEY" \
+if [ -z "\$TG_MAIL_DOMAIN" ] && [ -n "\$TG_RESEND_API_KEY" ]; then
+  TG_MAIL_DOMAIN="\$(curl -fsS --max-time 10 -H "Authorization: Bearer \$TG_RESEND_API_KEY" \
     https://api.resend.com/domains | python3 -c 'import json,sys;
 ds=[d.get("name") for d in json.load(sys.stdin).get("data",[]) if d.get("status")=="verified"]
 print(ds[0] if ds else "")' 2>/dev/null || true)"
 fi
-if [ -z "$TG_MAIL_DOMAIN" ] && [ -n "${TG_PUBLIC_URL:-}" ]; then
-  TG_MAIL_DOMAIN="$(echo "$TG_PUBLIC_URL" | sed 's|^https\?://||; s|/.*||; s|:.*||')"
+if [ -z "\$TG_MAIL_DOMAIN" ] && [ -n "\${TG_PUBLIC_URL:-}" ]; then
+  TG_MAIL_DOMAIN="\$(echo "\$TG_PUBLIC_URL" | sed 's|^https\?://||; s|/.*||; s|:.*||')"
 fi
+TG_MAIL_DOMAIN="\${TG_MAIL_DOMAIN:-treegent.local}"
 TMPL
   chmod 600 "$CONF"
 fi

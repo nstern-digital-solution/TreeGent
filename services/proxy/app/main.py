@@ -24,6 +24,9 @@ async def provider_error_handler(request, exc: dispatcher.ProviderError):
 async def _startup() -> None:
     await db.ensure_indexes()
     await seed_defaults()
+    # R68: crash recovery — requeue jobs stranded in 'dispatched' before the
+    # worker starts (they would never be picked up and would 409 the agent)
+    await dispatcher.requeue_stale("startup")
     try:
         n = await refresh_catalog()
         ready = sorted((await dispatcher.ready_providers()).keys())
@@ -63,7 +66,12 @@ async def seed_defaults() -> None:
                     {"$set": {**p, "enabled": True}}, upsert=True)
         except Exception as e:  # noqa: BLE001
             print(f"provider bootstrap json invalid: {e}")
-    # demo agent key (M2 testing; replaced by control enrollment later)
+    # demo agent key (M2 testing; replaced by control enrollment later).
+    # R68: DEV ONLY — a fresh production boot must never auto-insert a
+    # working key for a hardcoded actor (scripts get keys via env/args now).
+    from treegent_common.security import dev_mode
+    if not dev_mode():
+        return
     demo_agent_id = "agt_a9f96a657d2d0962"  # 'worker' actor from M1
     if await db.agent_keys.count_documents({"agent_id": demo_agent_id}) == 0:
         from .db import new_key

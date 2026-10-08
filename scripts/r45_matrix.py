@@ -1,12 +1,20 @@
-"""R45 proof matrix: identity is derived from the key, claims are ignored."""
+"""R45 proof matrix: identity is derived from the key, claims are ignored.
+
+R68: credentials come from env/args — the demo key is only auto-seeded on
+TG_DEV=1 boxes, so nothing here may hardcode an actor id or read the key
+out of Mongo.
+"""
 import json
+import os
+import sys
 import urllib.request
 
-WORKER_KEY = None
-from pymongo import MongoClient
-db = MongoClient("mongodb://127.0.0.1:27017/?directConnection=true")["treegent"]
-WORKER_KEY = db.agent_keys.find_one({"agent_id": "agt_a9f96a657d2d0962"})["_id"]
-FELIX = "hum_3b1a86e25fb16826"
+WORKER_KEY = os.environ.get("TG_AGENT_KEY") or (sys.argv[1] if len(sys.argv) > 1 else "")
+WORKER = os.environ.get("TG_AGENT_ID") or (sys.argv[2] if len(sys.argv) > 2 else "")
+if not WORKER_KEY or not WORKER:
+    sys.exit("usage: TG_AGENT_KEY=sk-agt-... TG_AGENT_ID=agt_... "
+             "python3 r45_matrix.py [key] [agent_id]")
+FELIX = os.environ.get("TG_PEER_ID", "hum_3b1a86e25fb16826")
 
 def req(url, headers=None):
     r = urllib.request.Request(url, headers=headers or {})
@@ -58,7 +66,7 @@ n = len(json.loads(b)) if s == 200 else b
 results.append(("key works on mail service", s, f"{n} approvals"))
 
 # 8) runtime inbox poll path (chat internal) works key-only
-s, b = req("http://127.0.0.1:8000/internal/agent-inbox?agent_id=agt_a9f96a657d2d0962",
+s, b = req(f"http://127.0.0.1:8000/internal/agent-inbox?agent_id={WORKER}",
            {"X-Agent-Key": WORKER_KEY})
 ok = s == 200
 results.append(("runtime key-only inbox poll", s, "OK" if ok else b[:80]))
