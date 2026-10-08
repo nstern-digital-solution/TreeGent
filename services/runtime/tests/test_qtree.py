@@ -154,3 +154,48 @@ def test_compact_maybe_both_paths():
     kept = len(a.messages) - 1
     print("PASS maybe_compact count path:", stats, "kept", kept, "regen:", a.regened)
     assert stats.get("entries") == 1 and kept < 500
+
+
+def test_issue4_episodic_strip_idempotent():
+    """Issue #4: strip_soul must remove the <episodic-memory> block too —
+    a refresh cycle (strip -> soul_block prepend) may never accumulate
+    copies (was +1 per generation step = unbounded prompt growth)."""
+    import os
+    from app import soul
+
+    ws = tempfile.mkdtemp(prefix="qtree_i4")
+    os.makedirs(os.path.join(ws, qtree.QTREE_DIR), exist_ok=True)
+    with open(os.path.join(ws, "SOUL.md"), "w") as f:
+        f.write("You are a test agent.")
+    qtree._append_entry(ws, 0, "- [2026-10-08 22:00] first summary entry")
+    qtree._save_meta(ws, {"0": {"entries": 1, "rolled": 0}})
+
+    body = "Base system text."
+    for step in range(1, 6):   # 5 refresh cycles = a 5-step turn
+        body = soul.strip_soul(body)
+        body = soul.soul_block(ws) + "\n\n" + body
+        assert body.count("<episodic-memory") == 1, \
+            f"step {step}: episodic block accumulated"
+        assert body.count("<soul>") == 1
+    print("PASS issue #4: episodic block stays at 1 across 5 refresh cycles")
+
+
+def test_issue5_budget_trim_keeps_L0():
+    """Issue #5: under budget pressure the trim must drop the COARSEST
+    level first and keep the recent L0 entry (it used to drop L0 and keep
+    ancient digests — exactly backwards)."""
+    ws = tempfile.mkdtemp(prefix="qtree_i5")
+    for lvl in range(5):
+        qtree._append_entry(ws, lvl, f"- [ts] LEVEL-{lvl} digest")
+    meta = {str(lvl): {"entries": 1, "rolled": 1 if lvl < 4 else 0}
+            for lvl in range(5)}
+    qtree._save_meta(ws, meta)
+
+    block = qtree.context_block(ws, budget=90)
+    assert "LEVEL-0" in block, "recent L0 entry must survive the trim"
+    assert "LEVEL-4" not in block, "coarsest digest must be dropped first"
+    # tag math (issue #5 bonus): L2 summarizes 4^2 = 16 L0 compactions
+    full = qtree.context_block(ws, budget=10_000)
+    assert "~16 compactions ago" in full and "~4 compactions ago" in full
+    assert "1 of" not in full, "only one entry per level rides in context"
+    print("PASS issue #5: L0 kept, coarse dropped, tags corrected")
