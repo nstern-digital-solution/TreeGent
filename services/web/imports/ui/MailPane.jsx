@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Actors } from '../collections.js';
@@ -119,6 +119,19 @@ export function MailPane() {
   const [compose, setCompose] = useState(null);
   const [msg, setMsg] = useState(null);
   const [err, setErr] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+
+  // R67 is PULL not push: the publications only read the local Mongo cache,
+  // so opening the tab must trigger the mail service's read-through sync
+  // (GET /mailboxes). Errors surface in the existing err slot.
+  const pull = async () => {
+    setSyncing(true); setErr(null);
+    try {
+      await call('/mailboxes', 'GET', null);
+    } catch (ex) { setErr(ex.reason || ex.message); }
+    setSyncing(false);
+  };
+  useEffect(() => { pull(); }, []);
 
   const me = useTracker(() => {
     Meteor.subscribe('actors');
@@ -149,7 +162,11 @@ export function MailPane() {
 
   return (
     <div className="page">
-      <h2>Mailboxes</h2>
+      <h2>Mailboxes{' '}
+        <button className="btn small" onClick={pull} disabled={syncing}>
+          {syncing ? 'checking for new mail…' : 'refresh'}
+        </button>
+      </h2>
       {msg && <p className="ok-msg">{msg}</p>}
       {err && <p className="err-msg">{err}</p>}
       <div className="layout mail-layout">
