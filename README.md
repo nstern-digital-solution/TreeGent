@@ -8,8 +8,8 @@ Repo: https://github.com/nstern-digital-solution/TreeGent
 
 ## Status
 
-Phase 0 complete — spec verbatim, architecture v1, rulings R1–R6 + R14–R19
-firm. Next: M1 (chat service + Meteor messaging).
+M1–M5 shipped and live (chat, proxy, mail, secrets, files, runtime, Meteor
+web). Security-hardened through R62–R68. Latest rulings in RULINGS.md.
 
 ## Documents
 

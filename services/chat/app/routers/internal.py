@@ -2,8 +2,7 @@ from datetime import datetime
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
 
 from .. import db, idgen
-
-from .. import db
+from ..config import settings
 from ..security import require_service_only
 from ..security import require_service
 
@@ -154,8 +153,17 @@ async def issue_agent_key(agent_id: str, actor: dict = Depends(require_service))
 
 @router.patch("/agents/{agent_id}/host")
 async def set_agent_host(agent_id: str, body: dict = Body(...),
-                         _: None = Depends(require_service_only)):
-    """R55: move an agent between hosts (null = central)."""
+                         x_service_token: str = Header(default=""),
+                         x_actor_id: str = Header(default="")):
+    """R55: move an agent between hosts (null = central). R68: host
+    binding changes require the ROOT human's actor id alongside the
+    service token — a bare shared token no longer suffices."""
+    if x_service_token != settings.service_token:
+        raise HTTPException(401, "bad service token")
+    from treegent_common.perms import is_root_actor
+    actor = await db.actors.find_one({"_id": x_actor_id}) if x_actor_id else None
+    if not actor or not is_root_actor(actor):
+        raise HTTPException(403, "host management requires the root human")
     host_id = body.get("host_id")  # explicit null must survive (back to central)
     if host_id is not None:
         hosts = db.db.agent_hosts if hasattr(db, "db") else db.agent_hosts

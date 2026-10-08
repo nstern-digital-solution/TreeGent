@@ -125,6 +125,10 @@ class SendIn(BaseModel):
 
 
 @router.post("/send", status_code=201)
+# NOTE (R68 review M1): a requester with NO org parent dead-letters here
+# (400 "requester has no superior to approve this send"). Actor creation
+# is root-only (R62) and always sets a parent except the root human —
+# a parentless AGENT is a configuration error to fix at the source.
 async def send(body: SendIn, _c: dict = Depends(caller_actor)):
     """R25: agents NEVER send directly — create mail + approval; the
     approver (requester's superior) decides via /approvals."""

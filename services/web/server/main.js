@@ -70,6 +70,16 @@ async function requireAdmin() {
   return caller;
 }
 
+async function adminActorHeaders() {
+  // R68: host-management endpoints require the root human's actor id
+  // alongside the service token (guards added in chat+runtime).
+  const caller = await Meteor.userAsync();
+  if (!caller) throw new Meteor.Error('forbidden', 'login required');
+  const actor = await myActor(caller);
+  if (!actor) throw new Meteor.Error('no-actor', 'user has no actor record');
+  return { 'X-Service-Token': SERVICE_TOKEN, 'X-Actor-Id': actor._id };
+}
+
 // R62: the mail service trusts X-Actor-Id from the central tier, so mail.api
 // must only ever declare an identity it has authorized. These are the routes
 // the web tier forwards — nothing else (internal hooks, adapters, …).
@@ -476,7 +486,7 @@ Meteor.methods({
     check(hostId, String);
     await requireAdmin();
     const r = await fetch(`${RUNTIME_URL}/internal/hosts/${hostId}/update`, {
-      method: 'POST', headers: { 'X-Service-Token': SERVICE_TOKEN } });
+      method: 'POST', headers: await adminActorHeaders() });
     if (!r.ok) throw new Meteor.Error('hosts', `${r.status}`);
     return r.json();
   },
@@ -484,8 +494,7 @@ Meteor.methods({
     check(hostId, String);
     await requireAdmin();
     const r = await fetch(`${RUNTIME_URL}/internal/hosts/${hostId}`, {
-      method: 'DELETE',
-      headers: { 'X-Service-Token': SERVICE_TOKEN } });
+      method: 'DELETE', headers: await adminActorHeaders() });
     if (!r.ok) throw new Meteor.Error('hosts', `${r.status}`);
     return r.json();
   },
@@ -504,7 +513,7 @@ Meteor.methods({
     await requireAdmin();
     const r = await fetch(`${RUNTIME_URL}/internal/hosts/${hostId}/provision`, {
       method: 'POST',
-      headers: { 'X-Service-Token': SERVICE_TOKEN } });
+      headers: await adminActorHeaders() });
     return r.json();
   },
 

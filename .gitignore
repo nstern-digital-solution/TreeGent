@@ -6,7 +6,7 @@ __pycache__/
 
 # meteor / node
 node_modules/
-.services/web/node_modules
+services/web/node_modules
 # runtime data
 deploy/mongo-data/
 deploy/*.log
@@ -21,3 +21,5 @@ deploy/.caddy-lab
 # browser tool (agent browser profile — workspaces live outside the repo,
 # but never let one land here if a workspace is ever pointed inside)
 browser-profile/
+
+*.egg-info/

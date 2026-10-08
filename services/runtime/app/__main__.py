@@ -157,11 +157,15 @@ async def add_host(body: HostIn, x_service_token: str = Header(default="")):
 
 
 @app.delete("/internal/hosts/{host_id}")
-async def delete_host(host_id: str, x_service_token: str = Header(default="")):
+async def delete_host(host_id: str, x_service_token: str = Header(default=""),
+                      x_actor_id: str = Header(default="")):
     """Remove a host: revoke its keypair (central side) and best-effort
     remove the authorized_keys line + stop the service on the box."""
     if not _token_ok(x_service_token):
         raise HTTPException(401, "bad service token")
+    # R68: host removal requires the ROOT human's actor id too
+    if not await _root_caller(x_actor_id):
+        raise HTTPException(403, "host management requires the root human")
     h = await db.agent_hosts.find_one({"_id": host_id})
     if not h:
         raise HTTPException(404, "no such host")
@@ -209,10 +213,24 @@ async def check_host(host_id: str, x_service_token: str = Header(default="")):
 
 
 @app.post("/internal/hosts/{host_id}/update")
-async def update_host(host_id: str, x_service_token: str = Header(default="")):
-    """R54: pull the host to the central box's current commit."""
+async def _root_caller(actor_id: str) -> bool:
+    """R68: host mutations need the root human's actor id beside the token."""
+    if not actor_id:
+        return False
+    from treegent_common.perms import is_root_actor
+    a = await db.actors.find_one({"_id": actor_id})
+    return bool(a and is_root_actor(a))
+
+
+@app.post("/internal/hosts/{host_id}/update")
+async def update_host(host_id: str, x_service_token: str = Header(default=""),
+                      x_actor_id: str = Header(default="")):
+    """R54: pull the host to the central box's current commit. R68: root
+    human actor id required alongside the token."""
     if not _token_ok(x_service_token):
         raise HTTPException(401, "bad service token")
+    if not await _root_caller(x_actor_id):
+        raise HTTPException(403, "host management requires the root human")
     h = await db.agent_hosts.find_one({"_id": host_id})
     if not h:
         raise HTTPException(404, "no such host")
