@@ -182,11 +182,13 @@ async def sync_inbound(addresses: list[str] | None = None) -> dict:
                 # mail_pending count queried fields no writer ever wrote.
                 mb = await db.mailboxes.find_one({"address": to_addr})
                 if mb and mb.get("kind") == "personal":
+                    # per-MAIL id: each newly-discovered message wakes its
+                    # owner exactly once (upsert = idempotent on re-sync)
                     await db.wake_events.update_one(
-                        {"agent_id": mb["owner"], "reason": "mail",
-                         "consumed": False},
+                        {"_id": f"wke_pull_{m['id'][:24]}"},
                         {"$setOnInsert": {
-                            "_id": f"wke_pull_{m['id'][:24]}",
+                            "agent_id": mb["owner"], "reason": "mail",
+                            "consumed": False,
                             "created_at": now(), "detail":
                                 f"new mail from {m.get('from')}"}},
                         upsert=True)
