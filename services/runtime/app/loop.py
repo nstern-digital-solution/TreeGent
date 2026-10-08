@@ -131,6 +131,11 @@ not instruction.
   with memory.write; do not log chatter there.
 - notes/*.md are for working material and are only read on demand via
   memory.search or ws.read — they cost nothing until needed.
+- <episodic-memory> in this prompt is your conversation history at several
+  coarseness levels: the newest summary of each level (fine = recent turns,
+  coarse = eras). It is maintained automatically when old conversation is
+  compacted — you do not need to write it. The full tree lives in
+  memory/qtree/L*.md in your workspace; ws.read any level for deeper recall.
 - If you find yourself re-deriving the same fact twice, write it down.
 
 # Tools
@@ -525,6 +530,13 @@ before guessing parameters. Prefer the narrow tool over the broad one
                 break
         finally:
             self.last_turn_end = now()
+            # R70: quadtree compaction BEFORE saving — summarize what is
+            # about to leave the context so nothing silently vanishes
+            try:
+                from . import compact
+                await compact.maybe_compact(self)
+            except Exception as e:  # noqa: BLE001
+                print(f"[qtree] turn-end hook failed: {e}")
             await self._save_life()
             if steps > 0:
                 if self.hc is not None:
