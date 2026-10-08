@@ -86,12 +86,66 @@ find_tools() {
   [ -z "$METEOR_BIN" ] && [ -x /home/treegent/.meteor/meteor ] && METEOR_BIN=/home/treegent/.meteor/meteor
 }
 
+# Build the production web bundle into $REPO/web-bundle.
+# install.sh chowns the repo to the service user and runs meteor as THAT user
+# (meteor writes .meteor/local under $HOME and refuses under a different
+# owner — running as root prints 'sudo chown -Rh <user> .meteor/local' and
+# exits 1, exactly the first-ever `treegent update` failure on prod).
+# Also installs the bundle's server-side node_modules, which
+# `meteor build --directory` does NOT do — without it node main.js dies on
+# bare 'require'. Log kept at /var/log/treegent/web-bundle.log.
+build_web_bundle() {
+  WEBLOG="/var/log/treegent/web-bundle.log"
+  mkdir -p /var/log/treegent 2>/dev/null || WEBLOG="/tmp/treegent-web-bundle.log"
+  SYSU="treegent"
+  id -u "$SYSU" >/dev/null 2>&1 || SYSU=root   # never installed? build anyway
+  : > "$WEBLOG"
+  echo "[web-bundle $(date -Is)] build start (as $SYSU)" >> "$WEBLOG"
+
+  # uv sync (step 2) ran as root and may have left root-owned files in the
+  # treegent-owned tree; hand the whole repo back to the service user first.
+  if [ "$SYSU" != root ]; then
+    chown -R "$SYSU:$SYSU" "$REPO" >> "$WEBLOG" 2>&1
+  fi
+
+  rm -rf "$REPO/web-bundle"
+  if [ "$SYSU" = root ]; then
+    (cd "$REPO/services/web" \
+       && "$METEOR_BIN" npm install --silent \
+       && "$METEOR_BIN" build --directory "$REPO/web-bundle") >> "$WEBLOG" 2>&1
+  else
+    (cd "$REPO/services/web" \
+       && sudo -u "$SYSU" "$METEOR_BIN" npm install --silent \
+       && sudo -u "$SYSU" "$METEOR_BIN" build --directory "$REPO/web-bundle") >> "$WEBLOG" 2>&1
+  fi || { echo "[web-bundle] meteor build FAILED" >> "$WEBLOG"; return 1; }
+
+  # server-side deps for the built bundle (meteor build --directory skips them)
+  if [ -d "$REPO/web-bundle/bundle/programs/server" ]; then
+    if [ "$SYSU" = root ]; then
+      (cd "$REPO/web-bundle/bundle/programs/server" \
+         && "$METEOR_BIN" npm install --production) >> "$WEBLOG" 2>&1
+    else
+      (cd "$REPO/web-bundle/bundle/programs/server" \
+         && sudo -u "$SYSU" "$METEOR_BIN" npm install --production) >> "$WEBLOG" 2>&1
+    fi || { echo "[web-bundle] server npm install FAILED" >> "$WEBLOG"; return 1; }
+  else
+    echo "[web-bundle] bundle/programs/server missing after build" >> "$WEBLOG"
+    return 1
+  fi
+  echo "[web-bundle $(date -Is)] done" >> "$WEBLOG"
+  return 0
+}
+
 cmd_update() {
   need_repo
   find_tools
   say "== TreeGent update =="
 
   say "1/5 git pull"
+  # egg-info is build metadata uv sync regenerates in place; when a checkout
+  # predates R68's untracking it is still tracked and its regenerated state
+  # blocks the pull (the prod egg-info incident). Untracked at HEAD = lossless.
+  rm -rf "$REPO/packages/treegent-common/treegent_common.egg-info"
   if ! git -C "$REPO" pull --ff-only origin main 2>&1 | sed 's/^/    /'; then
     err "git pull failed — fix manually: git -C $REPO status"
     exit 1
@@ -109,10 +163,14 @@ cmd_update() {
 
   say "3/5 web bundle"
   if [ -n "$METEOR_BIN" ]; then
-    (cd "$REPO/services/web" \
-       && "$METEOR_BIN" npm install --silent 2>/dev/null \
-       && "$METEOR_BIN" build --directory "$REPO/web-bundle" 2>&1 | tail -2 | sed 's/^/    /') \
-      || { err "web bundle build failed — web UI is now STALE; refusing to continue"; exit 1; }
+    if build_web_bundle; then
+      ok "    web bundle rebuilt (+ server deps)"
+    else
+      err "web bundle build failed — web UI is now STALE; refusing to continue"
+      err "    full log: ${WEBLOG:-?} — last lines:"
+      tail -15 "${WEBLOG:-/dev/null}" 2>/dev/null | sed 's/^/      /' >&2
+      exit 1
+    fi
   else
     err "meteor not found (looked in PATH, /home/treegent/.meteor)"
     err "web bundle NOT rebuilt — web UI would be stale; refusing to continue"

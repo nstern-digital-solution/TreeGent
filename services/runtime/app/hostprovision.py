@@ -117,7 +117,11 @@ fi
 if [ ! -d /opt/TreeGent/.git ]; then
   git clone -q https://github.com/nstern-digital-solution/TreeGent.git /opt/TreeGent
 else
-  git -c safe.directory=/opt/TreeGent -C /opt/TreeGent pull -q || true
+  # pre-R68 checkouts track egg-info that uv sync regenerates in place —
+  # remove it so the pull cannot fail on regenerated build metadata.
+  rm -rf /opt/TreeGent/packages/treegent-common/treegent_common.egg-info
+  git -c safe.directory=/opt/TreeGent -C /opt/TreeGent pull -q \
+    || echo "[provision] WARN: git pull failed — host keeps its current code; run Update after provisioning"
 fi
 chown -R treegent:treegent /opt/TreeGent /var/log/treegent
 cd /opt/TreeGent

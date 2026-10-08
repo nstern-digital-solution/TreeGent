@@ -159,6 +159,9 @@ if [ -d "$REPO_DIR" ]; then
   # repo dir is owned by the service user (meteor writes build dirs there);
   # git as root needs an explicit trust or it refuses AND we must NOT hide it
   git config --global --add safe.directory "$REPO_DIR" 2>/dev/null || true
+  # egg-info: regenerated build metadata that blocks the pull on pre-R68
+  # checkouts (tracked then, untracked now). Removing it is lossless.
+  rm -rf "$REPO_DIR/packages/treegent-common/treegent_common.egg-info"
   if ! git -C "$REPO_DIR" pull --ff-only; then
     say "ERROR: git pull failed — fix git access and re-run (NOT deploying stale code)"
     exit 1
