@@ -68,6 +68,68 @@ function InfoDot({ label, text }) {
   );
 }
 
+
+// R63d: export the agent trace for offline analysis
+function exportTrace(agent, format) {
+  const fname = 'trace-' + (agent.username || agent._id) + '-' +
+    new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  // one-shot full-depth subscription: the live view caps at 800 lines,
+  // the export should carry everything available
+  const sub = Meteor.subscribe('agentTranscripts', agent._id, 1000000, () => {
+    const rows = AgentTranscripts.find({ agent_id: agent._id },
+      { sort: { ts_received: 1 } }).fetch();
+    sub.stop();
+    let blob;
+    if (format === 'json') {
+      blob = new Blob([JSON.stringify({
+        agent: { id: agent._id, name: agent.display_name, username: agent.username },
+        exported_at: new Date().toISOString(),
+        line_count: rows.length,
+        lines: rows.map((r) => ({
+          ts: r.ts, role: r.role, content: r.content, meta: r.meta || null,
+        })),
+      }, null, 2)], { type: 'application/json' });
+    } else {
+      const parts = [
+        '# Agent trace — ' + (agent.display_name || agent.username),
+        'agent_id: ' + agent._id + '  ',
+        'username: ' + (agent.username || '') + '  ',
+        'exported_at: ' + new Date().toISOString() + '  ',
+        'lines: ' + rows.length,
+        '',
+        '---',
+        '',
+      ];
+      for (const r of rows) {
+        const t = (r.ts || '').toString().slice(0, 19).replace('T', ' ');
+        if (r.role === 'tool') {
+          const m = r.meta || {};
+          parts.push('## ' + (t || '') + ' tool: ' + (m.tool || '?'));
+          if (m.args) parts.push('args:', '```json',
+            JSON.stringify(m.args, null, 2), '```', '');
+          parts.push('result:', '```', String(r.content || ''), '```', '');
+        } else if (r.role === 'user' || r.role === 'injection') {
+          parts.push('## ' + (t || '') + ' ' + (r.role === 'user' ? 'user' : 'injection'),
+            (r.meta && r.meta.sender ? '(from ' + r.meta.sender + ')' : ''));
+          parts.push(String(r.content || ''), '');
+        } else {
+          parts.push('## ' + (t || '') + ' ' + r.role);
+          parts.push(String(r.content || ''), '');
+        }
+      }
+      blob = new Blob([parts.join('\n')], { type: 'text/markdown' });
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fname + '.' + format;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+}
+
 export function AgentsPane() {
   const actors = useTracker(() => Actors.find({}).fetch(), []);
   const agents = actors.filter((a) => a.kind === 'agent');
@@ -101,6 +163,18 @@ export function AgentsPane() {
             <option key={a._id} value={a._id}>{a.display_name} ({a.username})</option>
           ))}
         </select>
+        {selected ? (
+          <>
+            <button className="btn small"
+              onClick={() => exportTrace(agents.find((a) => a._id === selected), 'md')}>
+              export trace (md)
+            </button>
+            <button className="btn small"
+              onClick={() => exportTrace(agents.find((a) => a._id === selected), 'json')}>
+              export trace (json)
+            </button>
+          </>
+        ) : null}
       </div>
 
       {!selected && (
