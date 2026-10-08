@@ -79,8 +79,12 @@ async def list_convs(actor: dict = Depends(require_service)):
     return [pub(c) async for c in db.conversations.find({"members": me})]
 
 
+class MembersIn(BaseModel):
+    member_ids: list[str] = Field(default_factory=list)
+
+
 @router.post("/{conv_id}/members")
-async def add_member(conv_id: str, body: ConvIn,
+async def add_member(conv_id: str, body: MembersIn,
                      actor: dict = Depends(require_service)):
     c = await db.conversations.find_one({"_id": conv_id})
     if not c:

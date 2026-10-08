@@ -16,7 +16,10 @@ KINDS = ("human", "agent")
 
 
 class ActorIn(BaseModel):
-    username: str = Field(min_length=2, max_length=32)
+    # R69: usernames become filesystem workspaces (<root>/<username>) —
+    # constrain to a path-safe charset (../ escapes were possible)
+    username: str = Field(min_length=2, max_length=32,
+                          pattern=r"^[a-z0-9_.-]{2,32}$")
     display_name: str = Field(min_length=1, max_length=64)
     kind: str = "human"
     parent_id: str | None = None
@@ -150,5 +153,10 @@ async def delete_actor(actor_id: str, actor: dict = Depends(ORG_ADMIN)):
         raise HTTPException(400, "actor has subordinates; move them first")
     await db.conversations.update_many({}, {"$pull": {"members": actor_id}})
     await db.inbox.delete_many({"recipient_id": actor_id})
+    # R69: orphaned keys kept authorizing paid proxy generations for a
+    # deleted agent, and orphaned wakes polled forever
+    await db.agent_keys.update_many({"agent_id": actor_id},
+                                    {"$set": {"revoked": True}})
+    await db.wake_events.delete_many({"agent_id": actor_id})
     await db.actors.delete_one({"_id": actor_id})
     return {"deleted": actor_id}

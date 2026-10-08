@@ -95,7 +95,12 @@ async def mark_blocked(scope: str, seconds: int, reason: str) -> None:
 
 
 async def mark_ok(provider: str) -> None:
-    await db.provider_health.delete_many({"_id": {"$regex": f"^{provider}"}})
+    # R69 fix: unanchored/unescaped prefix regex cleared SIBLING providers'
+    # cooldowns too (mark_ok("prov") revived "prov2"). Anchor + escape + the
+    # separator so only this provider's own rows go.
+    import re as _re
+    await db.provider_health.delete_many(
+        {"_id": {"$regex": f"^{_re.escape(provider)}(?::|$)"}})
 
 
 async def blocked_scopes() -> set[str]:
@@ -209,7 +214,19 @@ async def run_with_failover(job: dict) -> tuple[dict, str]:
             await mark_ok(prov_name)
             return resp, m["_id"]
         except RateLimited as e:
-            wait = int(float(str(e) or 60) or 60)
+            # R69 fix: Retry-After may be an HTTP-date — int(float()) raised
+            # and aborted the whole failover instead of trying the next model
+            raw = str(e) or "60"
+            try:
+                wait = int(float(raw))
+            except ValueError:
+                from email.utils import parsedate_to_datetime
+                try:
+                    from datetime import datetime as _dt, timezone as _tz2
+                    wait = max(1, int((parsedate_to_datetime(raw)
+                                       - _dt.now(_tz2.utc)).total_seconds()))
+                except Exception:  # noqa: BLE001 — unparseable date
+                    wait = 60
             await mark_blocked(f"{prov_name}:{m['_id'].split('/', 1)[1]}",
                                min(wait, 900), "429 rate limited")
         except ProviderError as e:
@@ -225,9 +242,16 @@ async def run_with_failover(job: dict) -> tuple[dict, str]:
 # ---------------- metering + history (R34; tokens only, no pricing) ----
 
 async def meter(job: dict, model_id: str, status: str, queue_wait_s: float):
+    """R69 fix: idempotent — one usage row per (job, attempt). A crash
+    after metering used to leave the job dispatched; requeue_stale then
+    re-billed the provider every 15 min and DuplicateKeyError escaped the
+    error handler, so the job NEVER reached a terminal state (infinite
+    paid-retry loop). Attempt-scoped ids + swallowed dup = safe re-meter."""
     usage = (job.get("result") or {}).get("usage") or {}
-    await db.usage_events.insert_one({
-        "_id": f"use_{job['_id'][4:]}",
+    attempts = job.get("attempts") or 0
+    await db.usage_events.update_one(
+        {"_id": f"use_{job['_id'][4:]}_{attempts}"},
+        {"$setOnInsert": {
         "job_id": job["_id"],
         "agent_id": job["agent_id"],
         "class": job["class"],
@@ -242,7 +266,7 @@ async def meter(job: dict, model_id: str, status: str, queue_wait_s: float):
         "error": (job.get("error") or "")[:500] or None,
         "reason": job.get("reason"),
         "ts": now(),
-    })
+        }}, upsert=True)
 
 
 async def process_job(job: dict):
@@ -253,29 +277,41 @@ async def process_job(job: dict):
     try:
         resp, model_id = await run_with_failover(job)
         usage = resp.get("usage") or {}
+        # R69: terminal status FIRST, then meter/history — a crash between
+        # meter and the done-write used to leave the job dispatched and
+        # requeue it forever (paid loop). Now a post-terminal crash at
+        # worst loses the usage row for THIS attempt, never the job.
         await db.jobs.update_one({"_id": job["_id"]}, {"$set": {
             "model": model_id, "result": resp,
             "tokens_in": usage.get("prompt_tokens") or 0,
-            "tokens_out": usage.get("completion_tokens") or 0}})
-        await meter({**job, "result": resp}, model_id, "ok", queue_wait)
-        await db.history.insert_one({  # R34: full content history
-            "_id": job["_id"],
-            "agent_id": job["agent_id"],
-            "model": model_id,
-            "messages": job["messages"],
-            "tools": job.get("tools", []),
-            "response": resp.get("choices", []),
-            "usage": resp.get("usage"),
-            "ts": now(),
-        })
-        await db.jobs.update_one({"_id": job["_id"]}, {"$set": {
+            "tokens_out": usage.get("completion_tokens") or 0,
             "status": "done", "finished_at": now()}})
+        try:
+            await meter({**job, "result": resp}, model_id, "ok", queue_wait)
+            await db.history.insert_one({  # R34: full content history
+                "_id": job["_id"],
+                "agent_id": job["agent_id"],
+                "model": model_id,
+                "messages": job["messages"],
+                "tools": job.get("tools", []),
+                "response": resp.get("choices", []),
+                "usage": resp.get("usage"),
+                "ts": now(),
+            })
+        except Exception as e:  # noqa: BLE001 — meter/history must not fail the job
+            print(f"[proxy] post-done meter/history failed for "
+                  f"{job['_id']}: {type(e).__name__}: {str(e)[:120]}",
+                  flush=True)
     except Exception as e:  # noqa: BLE001
         job["error"] = getattr(e, "message", str(e))
-        await meter(job, job.get("model") or "?", "error", queue_wait)
         await db.jobs.update_one({"_id": job["_id"]}, {"$set": {
             "status": "failed", "error": str(e)[:500],
             "finished_at": now()}})
+        try:
+            await meter(job, job.get("model") or "?", "error", queue_wait)
+        except Exception as e2:  # noqa: BLE001
+            print(f"[proxy] error-path meter failed for "
+                  f"{job['_id']}: {type(e2).__name__}", flush=True)
 
 
 async def worker_loop():
@@ -341,7 +377,11 @@ async def refresh_catalog() -> int:
                 try_path, headers={"Authorization": f"Bearer {provider_key(p)}",
                                    "User-Agent": UA})
             try:
-                resp = urllib.request.urlopen(req, timeout=20)
+                # R69: blocking urlopen stalled the whole proxy event loop
+                # (20s x candidates x providers) — run it in a worker thread
+                import asyncio as _aio
+                resp = await _aio.to_thread(
+                    urllib.request.urlopen, req, 20)
                 models = json.load(resp)["data"]
                 break
             except urllib.error.HTTPError as e:
@@ -351,9 +391,10 @@ async def refresh_catalog() -> int:
                     # without auth and reject bad bearers harder than none —
                     # retry this path bare before walking on
                     try:
-                        resp = urllib.request.urlopen(
+                        resp = await _aio.to_thread(
+                            urllib.request.urlopen,
                             urllib.request.Request(try_path,
-                                headers={"User-Agent": UA}), timeout=20)
+                                headers={"User-Agent": UA}), 20)
                         models = json.load(resp)["data"]
                         break
                     except Exception:

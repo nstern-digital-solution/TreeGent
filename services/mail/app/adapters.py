@@ -176,6 +176,20 @@ async def sync_inbound(addresses: list[str] | None = None) -> dict:
                                      received_at=m.get("created_at"))
             if r.get("delivered"):
                 imported += 1
+                # R69 fix: pull-discovery wakes the owner once per NEW mail
+                # (dedupe makes this idempotent). Without it nothing ever
+                # signaled new inbound mail on any tier — has_work's
+                # mail_pending count queried fields no writer ever wrote.
+                mb = await db.mailboxes.find_one({"address": to_addr})
+                if mb and mb.get("kind") == "personal":
+                    await db.wake_events.update_one(
+                        {"agent_id": mb["owner"], "reason": "mail",
+                         "consumed": False},
+                        {"$setOnInsert": {
+                            "_id": f"wke_pull_{m['id'][:24]}",
+                            "created_at": now(), "detail":
+                                f"new mail from {m.get('from')}"}},
+                        upsert=True)
             else:
                 failed += 1
         if not page.get("has_more"):

@@ -36,7 +36,10 @@ class Services:
         # calls reach service-tier endpoints (inbox polling). On agent
         # hosts the header is absent and R56 host-tier endpoints are used.
         headers = {"X-Agent-Key": self.key}
-        if settings.service_token:
+        # R69 fix: hosted runtimes must NEVER attach the per-host daemon
+        # token (it authenticates the box's own /internal API, not chat).
+        # On central mode the shared token is still sent as before.
+        if settings.service_token and not settings.host_key:
             headers["X-Service-Token"] = settings.service_token
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.request(method, f"{base}{path}", headers=headers,
@@ -154,8 +157,11 @@ async def t_chat_check(ctx: ToolContext, args: dict) -> str:
     # host-tier API (X-Host-Id/X-Host-Key auth)
     hc = getattr(ctx, "host_client", None)
     if hc is not None:
-        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        # R69 fix: values were concatenated unquoted — a sender containing
+        # & or = corrupted the query
         from urllib.parse import quote
+        qs = "&".join(f"{k}={quote(str(v), safe='')}"
+                      for k, v in params.items())
         r = await hc._call(
             "GET", f"/internal/host/messages/{quote(ctx.agent_id)}?{qs}")
     else:

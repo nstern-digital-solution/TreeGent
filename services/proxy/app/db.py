@@ -34,6 +34,18 @@ async def ensure_indexes() -> None:
         if keys == [("_id", 1)]:
             continue  # _id index exists implicitly; unique not allowed on it
         await coll.create_index(keys, unique=unique)
+    # R69 fix: the one-in-flight rule was check-then-insert (TOCTOU) — two
+    # concurrent submissions both saw 0 in-flight and both queued, violating
+    # R32 serialization with DOUBLE paid generations. A partial unique index
+    # makes the insert itself the gate.
+    try:
+        await jobs.create_index(
+            [("agent_id", 1)],
+            unique=True, name="one_inflight",
+            partialFilterExpression={
+                "status": {"$in": ["queued", "dispatched"]}})
+    except Exception:  # noqa: BLE001 — index exists with older defn
+        pass
 
 
 def new_key() -> str:

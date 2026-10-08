@@ -122,6 +122,12 @@ async def host_pubkey(host_id: str, x_service_token: str = Header(default="")):
     R53). The UI shows it in the one-liner the operator runs on that box."""
     if not _token_ok(x_service_token):
         raise HTTPException(401, "bad service token")
+    # R69 fix: host_id reached the keypath unvalidated (path traversal);
+    # require a registered host with a canonical id first
+    import re as _re
+    if not _re.fullmatch(r"host_[0-9a-f]+", host_id) or \
+            not await db.agent_hosts.find_one({"_id": host_id}, {"_id": 1}):
+        raise HTTPException(404, "no such host")
     from .hostprovision import _host_keypair
     _, pub = _host_keypair(host_id)
     return {"pubkey": pub}
@@ -212,7 +218,6 @@ async def check_host(host_id: str, x_service_token: str = Header(default="")):
     return update
 
 
-@app.post("/internal/hosts/{host_id}/update")
 async def _root_caller(actor_id: str) -> bool:
     """R68: host mutations need the root human's actor id beside the token."""
     if not actor_id:

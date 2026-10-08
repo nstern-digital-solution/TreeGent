@@ -235,15 +235,29 @@ async def decide(appr_id: str, body: DecideIn, _c: dict = Depends(caller_actor))
         raise HTTPException(400, "decision must be approve or reject")
 
     if body.decision == "approve":
-        await approvals.update_one(
-            {"_id": appr_id},
-            {"$set": {"status": "approved", "decided_at": now()}})
+        # R69: atomic claim — the old check-then-set let two concurrent
+        # approves BOTH pass and double-send the real email. Only the
+        # claimant dispatches.
+        claimed = await approvals.find_one_and_update(
+            {"_id": appr_id, "status": "pending"},
+            {"$set": {"status": "dispatching", "decided_at": now()}})
+        if not claimed:
+            raise HTTPException(409, "already decided")
         mail_id = a["payload"].get("mail_id")
         msg = await mail_messages.find_one({"_id": mail_id})
         if not msg:
+            await approvals.update_one(
+                {"_id": appr_id},
+                {"$set": {"status": "failed", "detail": "mail vanished"}})
             raise HTTPException(500, "mail behind approval vanished")
         try:
             result = await adapters.dispatch_outbound(msg)
+            # R69: terminal 'approved' only AFTER a successful dispatch —
+            # a send failure used to leave an approved-but-failed mail
+            # with no retry path. now re-decide retries the send.
+            await approvals.update_one(
+                {"_id": appr_id},
+                {"$set": {"status": "approved"}})
             await db.wake_events.insert_one({
                 "_id": new_id("wke"),
                 "agent_id": a["requester_id"], "reason": "approval",
@@ -253,14 +267,23 @@ async def decide(appr_id: str, body: DecideIn, _c: dict = Depends(caller_actor))
             return {"approval_id": appr_id, "status": "approved",
                     "mail": result}
         except Exception as e:  # noqa: BLE001
-            await mail_messages.update_one({"_id": mail_id},
-                                           {"$set": {"status": "failed"}})
+            # back to pending: the send failed, NOT the decision — the
+            # approver (or a retry) can decide again
+            await approvals.update_one(
+                {"_id": appr_id},
+                {"$set": {"status": "pending",
+                          "detail": f"send failed, retry: {str(e)[:200]}"}})
+            await mail_messages.update_one(
+                {"_id": mail_id},
+                {"$set": {"status": "send_failed"}})
             raise HTTPException(502, f"send failed: {e}") from e
     else:
-        await approvals.update_one(
-            {"_id": appr_id},
+        claimed = await approvals.find_one_and_update(
+            {"_id": appr_id, "status": "pending"},
             {"$set": {"status": "rejected", "decided_at": now(),
                       "reason": body.reason}})
+        if not claimed:
+            raise HTTPException(409, "already decided")
         mail_id = a["payload"].get("mail_id")
         if mail_id:
             await mail_messages.update_one({"_id": mail_id},

@@ -104,13 +104,18 @@ async def _fetch_agent_messages(agent_id: str, sender: str | None,
                     "seen": bool(row.get("seen_at"))})
     # the agent has now SEEN these bodies — mark seen_at only. The
     # notification-ack (delivered_at) stays owned by the runtime turn.
+    # R69 fix: scope the seen_at write to THIS recipient — a channel
+    # message fanned out to N members shares one message_id, and an
+    # unscoped update marked OTHER agents' inbox rows as seen (their
+    # unread filters then silently lost the message).
     ids = [m["message_id"] for m in out] or [
-        row["_id"] for row in
+        row["message_id"] for row in
         await db.inbox.find(q).sort("received_at", -1)
         .limit(max(1, min(limit, 100))).to_list(None)]
     if ids:
         await db.inbox.update_many(
-            {"message_id": {"$in": ids}, "seen_at": None},
+            {"recipient_id": agent_id,
+             "message_id": {"$in": ids}, "seen_at": None},
             {"$set": {"seen_at": idgen.now()}})
     out.reverse()   # oldest first for reading
     return {"messages": out}
@@ -128,9 +133,14 @@ async def agent_messages(agent_id: str, sender: str | None = None,
 
 @router.post("/agent-inbox-delivered")
 async def agent_inbox_delivered(body: dict, _: None = Depends(require_service_only)):
-    await db.inbox.update_many(
-        {"recipient_id": body.get("agent_id"), "delivered_at": None},
-        {"$set": {"delivered_at": idgen.now()}})
+    """R69: optional inbox_ids scopes the delivered-at marking to exactly
+    the rows the runtime actually injected — blanket marking acked rows
+    that arrived mid-turn (silent message loss). Absent list = legacy
+    blanket behavior for old callers."""
+    q: dict = {"recipient_id": body.get("agent_id"), "delivered_at": None}
+    if body.get("inbox_ids"):
+        q["_id"] = {"$in": body["inbox_ids"]}
+    await db.inbox.update_many(q, {"$set": {"delivered_at": idgen.now()}})
     return {"ok": True}
 
 

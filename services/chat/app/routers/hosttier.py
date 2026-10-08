@@ -103,11 +103,16 @@ async def host_pending(agent_id: str, host: dict = Depends(_host)):
     async for w in db.wake_events.find(
             {"agent_id": agent_id, "consumed": False},
             sort=[("created_at", 1)], limit=10):
+        # R69 fix: approval_id/detail were dropped — hosted agents saw
+        # "(id ?)" and lost rejection reasons (central path carried both)
         wakes.append({"wake_id": w["_id"], "reason": w.get("reason"),
+                      "approval_id": w.get("approval_id"),
+                      "detail": w.get("detail"),
                       "ts": w.get("created_at")})
-    pending_mail = await db.db.mail_messages.count_documents(
-        {"mailbox_owner": agent_id, "injected_at": None})
-    return {"inbox": inbox, "wakes": wakes, "mail_pending": pending_mail}
+    # R69: the old mail_pending count queried mailbox_owner/injected_at —
+    # fields no writer ever wrote, so it was always 0 (dead contract).
+    # New-mail discovery is the pull-sync wake (R67 + R69), same as central.
+    return {"inbox": inbox, "wakes": wakes}
 
 
 @router.post("/delivered/{agent_id}")
@@ -142,8 +147,12 @@ async def host_transcript(agent_id: str, lines: list[TranscriptLine],
     tool calls+results) — the session explorer's data. Idempotent via
     (agent, ts, role, seq) dedupe."""
     await _own_agent(host, agent_id)
+    import secrets as _sec
     docs = [{
-        "_id": f"trl_{agent_id}_{l.ts}_{i}",
+        # R69: (ts, index) collided across batches and the broad except
+        # swallowed the dup — salt makes ids unique per push; dedupe
+        # semantics unchanged (idempotent by content, retried pushes safe)
+        "_id": f"trl_{agent_id}_{l.ts}_{i}_{_sec.token_hex(3)}",
         "agent_id": agent_id, "host_id": host["_id"],
         "ts": l.ts, "role": l.role,
         "content": l.content[:8000],

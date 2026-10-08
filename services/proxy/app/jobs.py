@@ -38,6 +38,11 @@ async def auth_agent(x_agent_key: str = Header(default="")) -> dict:
     k = await db.agent_keys.find_one({"_id": x_agent_key})
     if not k or k.get("revoked"):
         raise HTTPException(401, "bad agent key")
+    # R69 fix: a deleted agent's key kept authorizing PAID generations —
+    # delete_actor orphans key rows; verify the actor too
+    a = await db.actors.find_one({"_id": k["agent_id"]}, {"_id": 1})
+    if not a:
+        raise HTTPException(401, "agent no longer exists")
     return {"agent_id": k["agent_id"]}
 
 
@@ -63,7 +68,10 @@ async def priority(agent_id: str, reason: str) -> float:
         pass
     hierarchy = 1.0 / (2 ** max(depth, 0))
 
-    cutoff = time.time() - 48 * 3600
+    # R69 fix: usage rows store datetime ts — a float-epoch cutoff matched
+    # ZERO rows (type bracketing), so heavy agents were never deprioritized
+    from datetime import datetime, timedelta, timezone as _tz
+    cutoff = datetime.now(_tz.utc) - timedelta(hours=48)
     pipeline = [
         {"$match": {"agent_id": agent_id, "ts": {"$gt": cutoff},
                     "tokens_total": {"$exists": True}}},
