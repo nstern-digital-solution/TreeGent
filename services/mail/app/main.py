@@ -13,6 +13,7 @@ from treegent_common.perms import can, principal_for, resource_for
 from . import adapters
 from .config import (actors, approvals, db, mail_messages, mailboxes,
                      settings)
+from .idgen import new_id
 
 router = APIRouter(tags=["mail"])
 
@@ -147,7 +148,7 @@ async def send(body: SendIn, _c: dict = Depends(caller_actor)):
         raise HTTPException(400, "requester has no superior in the org tree; "
                                  "nobody could approve this send")
 
-    mail_id = f"mail_{abs(hash((body.requester_id, body.to, body.subject, now().isoformat()))) % 10**16:016d}"
+    mail_id = new_id("mail")
     appr_id = f"apr_{mail_id[5:]}"
     msg = {
         "_id": mail_id, "mailbox_id": mbx["_id"], "direction": "out",
@@ -170,7 +171,7 @@ async def send(body: SendIn, _c: dict = Depends(caller_actor)):
     # wake the approver if it's an agent (humans see the web queue)
     if superior.get("kind") == "agent":
         await db.wake_events.insert_one({
-            "_id": f"wke_{abs(hash((appr_id, superior['_id']))) % 10**16:016d}",
+            "_id": new_id("wke"),
             "agent_id": superior["_id"], "reason": "approval",
             "approval_id": appr_id, "created_at": now(), "consumed": False})
     return {"mail_id": mail_id, "approval_id": appr_id,
@@ -240,7 +241,7 @@ async def decide(appr_id: str, body: DecideIn, _c: dict = Depends(caller_actor))
         try:
             result = await adapters.dispatch_outbound(msg)
             await db.wake_events.insert_one({
-                "_id": f"wke_{abs(hash((appr_id, 'approved'))) % 10**16:016d}",
+                "_id": new_id("wke"),
                 "agent_id": a["requester_id"], "reason": "approval",
                 "approval_id": appr_id,
                 "detail": f"approved — mail sent to {msg.get('to')}",
@@ -262,7 +263,7 @@ async def decide(appr_id: str, body: DecideIn, _c: dict = Depends(caller_actor))
                                            {"$set": {"status": "failed"}})
         # notify the requesting agent their mail was rejected + why
         await db.wake_events.insert_one({
-            "_id": f"wke_{abs(hash((appr_id, 'rejected'))) % 10**16:016d}",
+            "_id": new_id("wke"),
             "agent_id": a["requester_id"], "reason": "approval-rejected",
             "approval_id": appr_id, "detail": body.reason[:500],
             "created_at": now(), "consumed": False})
@@ -277,7 +278,8 @@ async def inbound_hook(address: str, from_addr: str, subject: str,
                        text: str = "", html: str = "",
                        _t: None = Depends(require_service)):
     """Simulate an inbound email (dev/test; service-token gated). Real
-    inbound arrives via the Resend webhook below."""
+    inbound arrives via Resend's receiving API pulled in by sync_inbound
+    (R67) — there is no webhook endpoint."""
     return await adapters.ingest_inbound(address, from_addr, subject,
                                          text, html)
 
