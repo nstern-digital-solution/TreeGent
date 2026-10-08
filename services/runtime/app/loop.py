@@ -323,9 +323,14 @@ before guessing parameters. Prefer the narrow tool over the broad one
                 if not injections:
                     return
             elif trigger == "heartbeat":
-                interval = (await _cdb().agents_runtime.find_one(
-                    {"_id": self.id}) or {}).get(
-                        "heartbeat_s", settings.heartbeat_s)
+                # R63e: tier-aware interval — hosted mode has NO Mongo client;
+                # _cdb() there raises (this crashed EVERY hosted heartbeat turn)
+                if self.hc is not None:
+                    interval = settings.heartbeat_s
+                else:
+                    interval = (await _cdb().agents_runtime.find_one(
+                        {"_id": self.id}) or {}).get(
+                            "heartbeat_s", settings.heartbeat_s)
                 injections = [f"Heartbeat: {interval // 60} minutes elapsed "
                               f"since your last turn."]
             self.messages.append({"role": "user",
@@ -341,7 +346,8 @@ before guessing parameters. Prefer the narrow tool over the broad one
                 sender = last.split(" from ", 1)[1].split(" received at", 1)[0]
                 self._reply_ctx = {"sender": sender}
 
-            while steps < settings.max_turn_steps:
+            closing = False     # R63e: one final generation after the step cap
+            while steps < settings.max_turn_steps or closing:
                 steps += 1
                 self._refresh_soul()   # R50: operator/agent edits apply live
                 job = {"class_name": "agent", "reason": trigger,
@@ -372,7 +378,7 @@ before guessing parameters. Prefer the narrow tool over the broad one
                 assistant: dict = {"role": "assistant",
                                    "content": msg.get("content") or ""}
                 calls = msg.get("tool_calls") or []
-                if calls:
+                if calls and not closing:
                     assistant["tool_calls"] = calls
                     self.messages.append(assistant)
                     for c in calls:
@@ -393,8 +399,25 @@ before guessing parameters. Prefer the narrow tool over the broad one
                             "content": tool_msg[:4000],
                             "meta": {"tool": fn, "args": args,
                                      "call_id": c.get("id", fn)}})
+                    if steps >= settings.max_turn_steps:
+                        # R63e: step budget exhausted MID-JOB — never end
+                        # silently: one final generation to close the turn
+                        self.messages.append({"role": "user", "content":
+                            f"[turn limit reached: {settings.max_turn_steps} "
+                             f"tool steps. Finish now with a short status "
+                             f"reply: what you completed, what remains, and "
+                             f"the exact point to resume from. No more tool "
+                             f"calls this turn.]"})
+                        self._turn_lines.append({
+                            "ts": now().isoformat(), "role": "injection",
+                            "content": f"[turn limit reached after "
+                                       f"{settings.max_turn_steps} steps]",
+                            "meta": {"trigger": "turn-limit"}})
+                        closing = True
                     continue  # next generation with tool results
-                # plain answer -> turn complete
+                # plain answer (or closing generation) -> turn complete
+                if closing:
+                    assistant.pop("tool_calls", None)   # closing: text only
                 self.messages.append(assistant)
                 final_text = assistant.get("content", "") or ""
                 self._turn_lines.append({

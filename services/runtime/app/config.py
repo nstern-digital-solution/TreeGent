@@ -41,7 +41,11 @@ class Settings(BaseSettings):
     host_key: str = Field(default="",
                       validation_alias=AliasChoices("TG_RUNTIME_HOST_KEY", "TG_HOST_KEY"))
     # (TG_RUNTIME_EXEC_ENABLED shared name handled by prefix already)
-    max_turn_steps: int = 24           # tool-call steps per turn before forced stop
+    max_turn_steps: int = Field(default=24,   # tool-call steps per turn before
+                               # forced stop (R63e: cap now ends with a closing
+                               # status generation instead of silence)
+                               validation_alias=AliasChoices(
+                                   "TG_RUNTIME_MAX_TURN_STEPS"))
     search_backend: str = ""           # "" = web search disabled (R42)
 
     model_config = {"env_prefix": "TG_RUNTIME_", "env_file": ".env", "extra": "ignore"}
