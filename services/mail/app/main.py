@@ -283,8 +283,14 @@ async def resend_inbound(request: Request, secret: str = ""):
     from .config import settings as _s
     want = getattr(_s, "resend_webhook_secret", "") or ""
     if not want:
-        return {"delivered": False,
-                "reason": "webhook disabled: set TG_RESEND_WEBHOOK_SECRET"}
+        # R65: refuse LOUDLY — a silent 200 made Resend's dashboard show
+        # "delivered" while we stored nothing. 503 -> Resend retries, and
+        # the journal shows every dropped attempt.
+        print("[mail] DROPPED inbound webhook: TG_RESEND_WEBHOOK_SECRET "
+              "is not set — add it to /opt/TreeGent/.env and restart",
+              flush=True)
+        raise HTTPException(
+            503, "webhook not configured: set TG_RESEND_WEBHOOK_SECRET")
     if secret != want:
         raise HTTPException(403, "bad webhook secret")
     """Resend inbound-mail webhook. In Resend's dashboard point the
