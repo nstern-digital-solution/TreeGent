@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from treegent_common.auth import authenticate
 from treegent_common.perms import can, principal_for, resource_for
 
-from . import adapters
+from . import adapters, recovery
 from .config import (actors, approvals, db, mail_messages, mailboxes,
                      settings)
 from .idgen import new_id
@@ -258,12 +258,12 @@ async def decide(appr_id: str, body: DecideIn, _c: dict = Depends(caller_actor))
             await approvals.update_one(
                 {"_id": appr_id},
                 {"$set": {"status": "approved"}})
-            await db.wake_events.insert_one({
-                "_id": new_id("wke"),
-                "agent_id": a["requester_id"], "reason": "approval",
-                "approval_id": appr_id,
-                "detail": f"approved — mail sent to {msg.get('to')}",
-                "created_at": now(), "consumed": False})
+            # issue #13: deterministic wake id + $setOnInsert — a crash
+            # between the approved write and this insert self-heals via the
+            # recovery sweep instead of losing the notification forever.
+            await recovery.wake_requester(
+                db.wake_events, appr_id, a["requester_id"],
+                f"approved — mail sent to {msg.get('to')}")
             return {"approval_id": appr_id, "status": "approved",
                     "mail": result}
         except Exception as e:  # noqa: BLE001
@@ -289,11 +289,11 @@ async def decide(appr_id: str, body: DecideIn, _c: dict = Depends(caller_actor))
             await mail_messages.update_one({"_id": mail_id},
                                            {"$set": {"status": "failed"}})
         # notify the requesting agent their mail was rejected + why
-        await db.wake_events.insert_one({
-            "_id": new_id("wke"),
-            "agent_id": a["requester_id"], "reason": "approval-rejected",
-            "approval_id": appr_id, "detail": body.reason[:500],
-            "created_at": now(), "consumed": False})
+        # (issue #13: deterministic id — same self-healing contract as the
+        # approved wake above)
+        await recovery.wake_requester(
+            db.wake_events, appr_id, a["requester_id"], body.reason[:500],
+            reason="approval-rejected")
         return {"approval_id": appr_id, "status": "rejected",
                 "reason": body.reason}
 
