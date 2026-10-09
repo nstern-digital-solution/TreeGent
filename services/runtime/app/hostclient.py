@@ -99,11 +99,11 @@ def session_path(workspace: str) -> Path:
 def _sanitize(messages: list[dict], max_messages: int = 500) -> list[dict]:
     """Heal the failure-storm bloat: a dead provider used to leave
     hundreds of identical user lines (re-appended unread backlogs and
-    '[generation failed]' retry stubs). Drop failure stubs, keep only
-    the FIRST occurrence of each distinct user message (a re-delivered
-    old message between newer ones would otherwise be answered AGAIN),
+    '[generation failed]' retry stubs). Drop failure stubs, collapse
+    only CONSECUTIVE repeats of identical user content (what a
+    re-append/re-delivery storm actually is — a re-delivered old
+    message between newer ones is a real repeat and must be kept),
     keep the newest tail."""
-    seen_users: set[str] = set()
     out = []
     for m in messages:
         role = m.get("role")
@@ -111,9 +111,9 @@ def _sanitize(messages: list[dict], max_messages: int = 500) -> list[dict]:
         if role == "user":
             if content.startswith("[generation failed"):
                 continue        # retry noise, never real conversation
-            if content in seen_users:
+            if (out and out[-1].get("role") == "user"
+                    and content == out[-1].get("content")):
                 continue        # duplicate delivery (re-ack race / spin)
-            seen_users.add(content)
         out.append(m)
     # R68: extract the system prompt FIRST, then tail-cap the REST. The old
     # order (tail-cap, then find system in the tail) dropped the system
