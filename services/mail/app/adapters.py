@@ -129,8 +129,10 @@ def list_received_emails(limit: int = 100, after: str = "") -> dict:
 async def sync_inbound(addresses: list[str] | None = None) -> dict:
     """R67: pull inbound mail from Resend on demand (read-through). Called
     before serving a mailbox list/read. Imports anything new, deduped by
-    Resend email id; never wakes agents (pull is not an event). Optional
-    addresses filter syncs only those mailboxes. No webhook involved.
+    Resend email id; wakes the mailbox's agent recipients once per NEW
+    mail (R69 wake — $setOnInsert makes it idempotent per mail+recipient).
+    Optional addresses filter syncs only those mailboxes. No webhook
+    involved.
     R68: rows imported without a body (Resend body hiccup) get their body
     RETRIED on later syncs instead of being skipped forever by the dedupe."""
     imported, skipped, failed, backfilled = 0, 0, 0, 0
@@ -176,22 +178,34 @@ async def sync_inbound(addresses: list[str] | None = None) -> dict:
                                      received_at=m.get("created_at"))
             if r.get("delivered"):
                 imported += 1
-                # R69 fix: pull-discovery wakes the owner once per NEW mail
-                # (dedupe makes this idempotent). Without it nothing ever
-                # signaled new inbound mail on any tier — has_work's
-                # mail_pending count queried fields no writer ever wrote.
+                # R69 fix: pull-discovery wakes the mailbox's agent
+                # recipients once per NEW mail (dedupe makes this
+                # idempotent). Without it nothing ever signaled new
+                # inbound mail on any tier — has_work's mail_pending
+                # count queried fields no writer ever wrote.
                 mb = await db.mailboxes.find_one({"address": to_addr})
-                if mb and mb.get("kind") == "personal":
-                    # per-MAIL id: each newly-discovered message wakes its
-                    # owner exactly once (upsert = idempotent on re-sync)
-                    await db.wake_events.update_one(
-                        {"_id": f"wke_pull_{m['id'][:24]}"},
-                        {"$setOnInsert": {
-                            "agent_id": mb["owner"], "reason": "mail",
-                            "consumed": False,
-                            "created_at": now(), "detail":
-                                f"new mail from {m.get('from')}"}},
-                        upsert=True)
+                if mb:
+                    # R35 wake targeting (mirrors ingest_inbound's dev
+                    # hook): personal -> owner, shared -> every member;
+                    # agent actors only.
+                    recips = ([mb["owner"]] if mb.get("kind") == "personal"
+                              else mb.get("members", []))
+                    for rid in recips:
+                        actor = await db.actors.find_one({"_id": rid})
+                        if not (actor and actor.get("kind") == "agent"):
+                            continue
+                        # per-(mail,recipient) id: deterministic and
+                        # unique per recipient — a per-MAIL id collided
+                        # across members (second member never woken) and
+                        # truncated the 36-char provider id to 24 chars
+                        await db.wake_events.update_one(
+                            {"_id": f"wke_pull_{m['id']}_{rid}"},
+                            {"$setOnInsert": {
+                                "agent_id": rid, "reason": "mail",
+                                "consumed": False,
+                                "created_at": now(), "detail":
+                                    f"new mail from {m.get('from')}"}},
+                            upsert=True)
             else:
                 failed += 1
         if not page.get("has_more"):
