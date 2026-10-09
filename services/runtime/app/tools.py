@@ -218,9 +218,12 @@ async def t_mail_read(ctx: ToolContext, args: dict) -> str:
         cand = [b for b in mine + shared
                 if b.get("address", "").lower() == want]
         if not cand:
+            # parens matter: `A + B if mine else "none"` parses as
+            # `(A + B) if mine else "none"` and collapsed the whole message
+            # to 'none' whenever no personal box existed (#26)
             return (f"ERROR: no readable mailbox {want!r}; you own "
-                    + ", ".join(b["address"] for b in mine) if mine
-                    else "none")
+                    + (", ".join(b["address"] for b in mine) if mine
+                       else "none"))
         target = cand[0]
     else:
         if not mine and not shared:
