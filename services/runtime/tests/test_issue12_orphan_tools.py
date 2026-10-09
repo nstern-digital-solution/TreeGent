@@ -55,7 +55,10 @@ def test_sanitize_budget_trim_no_leading_tool():
              {"role": "assistant", "content": "a" * 800_000}]
     out = _sanitize(msgs, max_messages=500)
     roles = [m["role"] for m in out]
-    assert "tool" not in roles, f"orphan tool survived the budget trim: {roles}"
+    # invariant (per review on #17): no orphan tool result may survive any
+    # cut — a tool msg is healthy iff a kept assistant carries its tool_call
+    assert not [m for m in out if m.get("role")=="tool"
+                and not any(a.get("tool_calls") and any(c["id"]==m["tool_call_id"] for c in a["tool_calls"]) for a in out)], "orphan tool survived"
     # the trim must stay minimal: the two newest big messages survive
     assert any((m.get("content") or "").startswith("u") for m in out)
     assert any((m.get("content") or "").startswith("a") for m in out)
