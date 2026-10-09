@@ -15,6 +15,7 @@ one line per message. The old TG_MONGO_URL path is gone.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import os
 from pathlib import Path
@@ -96,6 +97,33 @@ def session_path(workspace: str) -> Path:
     return p
 
 
+# Issue #11: model echoes of injected blocks (the 393KB assistant echo).
+# Same markers soul.strip_soul removes from the system body — historical
+# echoes ride in conversation history, which strip_soul never touches.
+_ECHO_RES = (
+    re.compile(r"<soul>.*?</soul>\s*", re.DOTALL),
+    re.compile(r"<memory>.*?</memory>\s*", re.DOTALL),
+    re.compile(r"<episodic-memory[^>]*>.*?</episodic-memory>\s*", re.DOTALL),
+)
+_MSG_CAP = 20_000      # a single message must never own the context window
+
+
+def _bound_content(content: str) -> str:
+    """Scrub echoed injection blocks and cap giant non-system content."""
+    if not isinstance(content, str):
+        return content
+    scrubbed = content
+    for rx in _ECHO_RES:
+        scrubbed = rx.sub("", scrubbed)
+    if scrubbed != content:
+        content = scrubbed.strip() + "\n[scrubbed echo]"
+    if len(content) > _MSG_CAP:
+        cut = len(content) - 15_000    # keep head 10k + tail 5k
+        content = (content[:10_000] + "\n[... truncated %d chars ...]\n" % cut
+                   + content[-5_000:])
+    return content
+
+
 def _sanitize(messages: list[dict], max_messages: int = 500) -> list[dict]:
     """Heal the failure-storm bloat: a dead provider used to leave
     hundreds of identical user lines (re-appended unread backlogs and
@@ -114,6 +142,12 @@ def _sanitize(messages: list[dict], max_messages: int = 500) -> list[dict]:
             if content in seen_users:
                 continue        # duplicate delivery (re-ack race / spin)
             seen_users.add(content)
+        if role != "system":
+            # Issue #11: scrub echoed injection blocks + cap giant content
+            # (the system message keeps its own strip_soul handling in loop).
+            bounded = _bound_content(content)
+            if bounded != content:
+                m = dict(m, content=bounded)
         out.append(m)
     # R68: extract the system prompt FIRST, then tail-cap the REST. The old
     # order (tail-cap, then find system in the tail) dropped the system
@@ -160,5 +194,15 @@ def load_messages(workspace: str) -> list[dict]:
 def save_messages(workspace: str, messages: list[dict]) -> None:
     p = session_path(workspace)
     tmp = p.with_suffix(".tmp")
-    tmp.write_text("\n".join(json.dumps(m) for m in messages) + "\n")
+    # Issue #11: bound what we persist too — an echo produced THIS turn
+    # must not land on disk at full size (load path scrubs old victims).
+    lines = []
+    for m in messages:
+        if m.get("role") != "system":
+            content = m.get("content") or ""
+            bounded = _bound_content(content)
+            if bounded != content:
+                m = dict(m, content=bounded)
+        lines.append(json.dumps(m))
+    tmp.write_text("\n".join(lines) + "\n")
     os.replace(tmp, p)   # atomic: crash never truncates the transcript
