@@ -97,14 +97,35 @@ def test_needs_compaction():
 
 
 def test_gen_failure_degrades():
+    """Issue #9: summarize failure -> the raw material is persisted
+    verbatim, a head+tail placeholder pointing at it is written, and
+    record_compaction RAISES so the caller keeps the messages in the
+    live context (the old material[:limit] kept 2.6% and destroyed the
+    newest material)."""
     async def bad_gen(prompt):
         raise RuntimeError("provider down")
     ws = tempfile.mkdtemp(prefix="qtree4")
-    dropped = [{"role": "user", "content": "keep me raw " + "q" * 100}]
-    r = asyncio.run(qtree.record_compaction(ws, dropped, bad_gen))
+    dropped = [{"role": "user", "content": "keep me raw " + "q" * 100},
+               {"role": "assistant", "content": "tail content XYZ"}]
+    try:
+        asyncio.run(qtree.record_compaction(ws, dropped, bad_gen))
+        raise AssertionError("record_compaction must raise when "
+                             "summarization fails")
+    except RuntimeError:
+        pass
     e = qtree.read_entries(ws, 0)[0]
-    assert "keep me raw" in e
-    print("PASS degrade: raw tail kept when provider fails")
+    assert "keep me raw" in e, "head of material must be kept"
+    assert "tail content XYZ" in e, "tail of material must be kept"
+    assert "[TRUNCATED" in e and "memory/qtree/raw/" in e, \
+        "placeholder must carry the explicit raw-file marker"
+    raw_dir = os.path.join(ws, qtree.QTREE_DIR, "raw")
+    raws = os.listdir(raw_dir)
+    assert len(raws) == 1, raws
+    with open(os.path.join(raw_dir, raws[0]), encoding="utf-8") as f:
+        raw = f.read()
+    assert "keep me raw" in raw and "tail content XYZ" in raw, \
+        "raw file must hold the material verbatim"
+    print("PASS degrade: raw persisted + head/tail placeholder, error raised")
 
 
 if __name__ == "__main__":
@@ -142,7 +163,7 @@ def test_compact_maybe_both_paths():
         def _regen_system_prompt(self):
             self.regened = True
 
-    async def ok_gen(p): return "stub summary"
+    async def ok_gen(agent, prompt): return "stub summary"
 
     # count path: many tiny messages
     msgs = [{"role": "system", "content": "s"}]
@@ -154,6 +175,7 @@ def test_compact_maybe_both_paths():
     kept = len(a.messages) - 1
     print("PASS maybe_compact count path:", stats, "kept", kept, "regen:", a.regened)
     assert stats.get("entries") == 1 and kept < 500
+    assert a.regened, "system prompt must be regenerated on success"
 
 
 def test_issue4_episodic_strip_idempotent():
@@ -199,3 +221,70 @@ def test_issue5_budget_trim_keeps_L0():
     assert "~16 compactions ago" in full and "~4 compactions ago" in full
     assert "1 of" not in full, "only one entry per level rides in context"
     print("PASS issue #5: L0 kept, coarse dropped, tags corrected")
+
+
+def test_issue9_summarize_failure_keeps_context():
+    """Issue #9 regression: when the summarizer raises, maybe_compact
+    must NOT drop messages from the live context (compaction retries
+    next turn), the dropped material must be persisted VERBATIM to
+    memory/qtree/raw/, and any entry written must keep head AND tail
+    with the explicit TRUNCATED marker pointing at that raw file."""
+    from app import compact as C
+
+    class StubAgent:
+        def __init__(self, msgs):
+            self.messages = msgs
+            self.workspace = tempfile.mkdtemp(prefix="qtree_i9")
+            self.regened = False
+        def _regen_system_prompt(self):
+            self.regened = True
+
+    async def bad_gen(agent, prompt):
+        raise RuntimeError("provider 5xx")
+
+    msgs = [{"role": "system", "content": "sys"}]
+    # 500 non-system msgs: the count budget drops the oldest 500-200 = 300
+    last_dropped = 500 - qtree.COMPACT_TRIGGER_MSGS // 2 - 1
+    for i in range(500):
+        pad = "x" * 300
+        if i == 0:
+            content = "HEAD-KEEP-ME " + pad          # head of dropped material
+        elif i == last_dropped:
+            content = pad + " TAIL-KEEP-ME"          # tail of dropped material
+        else:
+            content = f"msg {i} " + pad
+        msgs.append({"role": "user", "content": content})
+    a = StubAgent(list(msgs))
+    before = list(a.messages)
+    C._gen = bad_gen
+    stats = asyncio.run(C.maybe_compact(a))
+    assert stats == {}, "no success stats on failure"
+    assert len(a.messages) == len(before), \
+        "messages must NOT be dropped when summarization fails"
+    assert a.messages == before, "context must be byte-identical after failure"
+    assert any(m["content"].startswith("HEAD-KEEP-ME") for m in a.messages)
+    assert not a.regened, "no system-prompt regen on failure"
+
+    raw_dir = os.path.join(a.workspace, qtree.QTREE_DIR, "raw")
+    raws = os.listdir(raw_dir)
+    assert raws, "raw file must exist"
+    with open(os.path.join(raw_dir, raws[0]), encoding="utf-8") as f:
+        raw = f.read()
+    assert "HEAD-KEEP-ME" in raw and "TAIL-KEEP-ME" in raw, \
+        "raw file must hold the full material verbatim"
+    assert len(raw) > qtree.COMPACT_ENTRY_MAX, \
+        "raw must be the FULL material, not a truncation"
+
+    entries = qtree.read_entries(a.workspace, 0)
+    assert entries, "failure-path L0 entry must point at the raw file"
+    e = entries[0]
+    assert "HEAD-KEEP-ME" in e, "placeholder must keep the head"
+    assert "TAIL-KEEP-ME" in e, "placeholder must keep the tail"
+    assert "[TRUNCATED" in e and "memory/qtree/raw/" in e
+    assert len(e) <= qtree.COMPACT_ENTRY_MAX
+
+    # the next turn retries compaction instead of compounding the loss
+    stats = asyncio.run(C.maybe_compact(a))
+    assert len(a.messages) == len(before), "retry must also keep context"
+    print("PASS issue #9: failure keeps context, raw verbatim, "
+          "placeholder has head+tail+raw marker")

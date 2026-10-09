@@ -3,8 +3,11 @@
 Compaction points:
   1. TURN END — if the chatlog crosses qtree.COMPACT_TRIGGER_CHARS, the
      OLDEST non-system messages (down to half the trigger) are summarized
-     into the quadtree BEFORE the context is trimmed, then removed from
-     the live messages. Nothing silently disappears anymore.
+     into the quadtree and the context trimmed ONLY on success. If the
+     summary cannot be generated (issue #9), the messages STAY in the
+     live context and compaction retries next turn; the material is also
+     persisted verbatim to memory/qtree/raw/ first. Nothing silently
+     disappears anymore.
   2. CONTEXT BLOCK — soul_block() appends the qtree view (newest entry of
      every level), so every generation carries all coarseness levels.
   3. RESTORE — _sanitize tail-caps at 500 messages; the qtree
@@ -20,7 +23,11 @@ from __future__ import annotations
 # ---- 1. turn-end compaction -------------------------------------------------
 
 async def maybe_compact(agent) -> dict:
-    """Called in the turn's finally block. Returns stats (may be empty)."""
+    """Called in the turn's finally block. Returns stats (may be empty).
+    Issue #9: the live context is trimmed ONLY after record_compaction
+    succeeded — if summarization fails, the messages stay in the context
+    (raw material is already persisted in memory/qtree/raw/) and the
+    next turn retries compaction."""
     from . import qtree
     msgs = agent.messages
     if not qtree.needs_compaction(msgs):
@@ -56,17 +63,26 @@ async def maybe_compact(agent) -> dict:
             break
         drop_idx.add(i)
     dropped = [m for i, m in enumerate(msgs) if i in drop_idx]
-    agent.messages = [m for i, m in enumerate(msgs) if i not in drop_idx]
+    kept = [m for i, m in enumerate(msgs) if i not in drop_idx]
 
     stats = {}
     try:
         stats = await qtree.record_compaction(
             agent.workspace, dropped, lambda p: _gen(agent, p))
+    except Exception as e:  # noqa: BLE001 — never fail the turn for memory
+        # issue #9: summarize failed — leave agent.messages UNTOUCHED so
+        # nothing is dropped unrecoverably; the raw material is persisted
+        # and compaction retries on the next turn.
+        print(f"[qtree] compaction failed, context untouched: {e}")
+        return stats
+    # summarized OK — only now trim the live context
+    agent.messages = kept
+    try:
         # R70: the qtree view changed -> regenerate the system prompt so
         # the next generation sees the new entry
         agent._regen_system_prompt()
     except Exception as e:  # noqa: BLE001 — never fail the turn for memory
-        print(f"[qtree] compaction failed, raw kept: {e}")
+        print(f"[qtree] system-prompt regen failed: {e}")
     return stats
 
 
