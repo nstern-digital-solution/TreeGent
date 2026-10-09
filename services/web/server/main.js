@@ -629,14 +629,17 @@ Meteor.methods({
     return await api(`/conversations/dm/${otherActorId}`, 'POST', me._id);
   },
 
-  async 'tg.createChannel'(name) {
+  async 'tg.createChannel'(name, memberIds) {
     check(name, String);
+    check(memberIds, Match.Optional([String]));
     const me = await myActor(await Meteor.userAsync());
     if (!me) throw new Meteor.Error('no-actor', 'user has no actor record');
-    // M1 demo shortcut: company-wide channel (every current actor is a member)
-    const everyone = (await Actors.find().fetchAsync()).map((a) => a._id);
+    // issue #22: explicit creator-chosen members only (was the M1 demo
+    // shortcut that defaulted every actor into every channel). An omitted
+    // list means "just me" — members are added deliberately afterwards,
+    // and the chat service enforces the creator-subtree membership policy.
     return await api('/conversations', 'POST', me._id, {
-      kind: 'channel', name, member_ids: everyone,
+      kind: 'channel', name, member_ids: memberIds || [],
     });
   },
 
