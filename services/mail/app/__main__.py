@@ -23,6 +23,15 @@ async def _startup() -> None:
         await _db.permissions.update_one(
             {"_id": rule["_id"]},
             {"$setOnInsert": rule}, upsert=True)
+    # issue #20 one-time upgrade: rows seeded before root rescue sit at the
+    # exact old seed shape ["own"], and $setOnInsert (R60c) never rewrites
+    # an existing row — a fresh deploy would pass while an upgraded box
+    # silently kept the bug. Additive and shape-gated: only the untouched
+    # pre-fix seed shape is upgraded, any root edit is left alone.
+    for perm in ("approvals.read", "approvals.decide"):
+        await _db.permissions.update_one(
+            {"_id": perm, "allow": ["own"]},
+            {"$set": {"allow": ["own", "root"]}})
     # dev default: capture sink outbound until a Resend key + adapter exist
     from .config import db
     if await db.mail_adapters.count_documents({}) == 0:
