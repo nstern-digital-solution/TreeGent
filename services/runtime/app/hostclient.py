@@ -124,6 +124,14 @@ def _sanitize(messages: list[dict], max_messages: int = 500) -> list[dict]:
     body = out[1:] if system_msg is not None else out
     room = max_messages - (1 if system_msg is not None else 0)
     tail = body[-room:] if room > 0 else []
+    # Issue #12: a cut may land mid tool-exchange (assistant(tool_calls)
+    # -> tool results). A kept 'tool' message whose parent assistant was
+    # cut away has no surviving tool_call_id match and is rejected with
+    # 400 by strict OpenAI-compatible providers — every turn, and the
+    # corrupt start was re-saved each turn. Snap the start forward past
+    # orphan tool results to the next safe boundary.
+    while tail and tail[0].get("role") == "tool":
+        tail = tail[1:]
     # Context budget: cap TOTAL chars so accumulation without compaction
     # can't explode again. The SYSTEM prompt is never elided; the rest is
     # trimmed oldest-first until the non-system content fits the budget.
@@ -134,6 +142,10 @@ def _sanitize(messages: list[dict], max_messages: int = 500) -> list[dict]:
     pre_budget = len(tail)
     while (sum(len(m.get("content") or "") for m in tail)
            + syslen) > budget and len(tail) > 2:
+        tail = tail[1:]
+    # Issue #12: the budget trim cuts from the front too — snap forward
+    # past any tool results it just orphaned.
+    while tail and tail[0].get("role") == "tool":
         tail = tail[1:]
     if len(tail) < pre_budget:
         print("[context budget] dropped %d oldest message(s) to fit %d chars"
