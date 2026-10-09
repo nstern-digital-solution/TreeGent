@@ -353,6 +353,11 @@ before guessing parameters. Prefer the narrow tool over the broad one
     async def _run_turn_inner(self, trigger: str) -> None:
         self.busy = True
         self._turn_lines = []   # R57: fresh per turn
+        # issue #8: reply context is per-turn state too — a sender left
+        # over from an earlier event turn used to make a later heartbeat
+        # or mail-wake answer auto-post into that old conversation
+        self._reply_ctx = None
+        self._pending_senders = []
         turn_id = f"trn_{os.urandom(6).hex()}"
         started = now()
         injections: list[str] = []
@@ -526,9 +531,19 @@ before guessing parameters. Prefer the narrow tool over the broad one
                     ctx = self._reply_ctx
                     posted = await self._exec_tool("chat.send", {
                         "to": ctx["sender"], "body": final_text})
-                    self.messages.append(
-                        {"role": "user", "content":
-                         f"[auto-posted to {ctx['sender']}: {posted}]"})
+                    # issue #8 follow-up (review): the outcome is a status
+                    # note, never a fabricated user utterance — an error is
+                    # tagged [auto-post FAILED: …] so no future bug class
+                    # can inject tool error text as user conversation
+                    # content (it pollutes context and the #10 dedupe).
+                    ok = not (isinstance(posted, str)
+                              and posted.startswith("ERROR"))
+                    note = (f"[auto-posted to {ctx['sender']}: {posted}]"
+                            if ok else
+                            f"[auto-post FAILED to {ctx['sender']}: "
+                            f"{posted}]")
+                    self.messages.append({"role": "system",
+                                          "content": note})
                 if trigger == "event":
                     await self._mark_consumed()
                 break
