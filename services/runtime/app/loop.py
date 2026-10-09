@@ -68,6 +68,7 @@ class Agent:
         self.hc = HOST
         self._pending_inbox_ids: list[str] = []
         self._pending_wake_ids: list[str] = []
+        self._pending_senders: list[str] = []   # issue #7: senders this turn
         # R68: central-mode counterpart of the id lists above — the central
         # ack path is blanket (agent-inbox-delivered + mark all unconsumed),
         # but the safety net still needs to know a failed turn left work
@@ -265,12 +266,21 @@ before guessing parameters. Prefer the narrow tool over the broad one
         p = await self.hc.pending(self.id)
         lines = []
         inbox = p.get("inbox", [])
+        # issue #7: the reply target is structured data — the sender list
+        # is stashed here and _reply_ctx derives from it; the rendered
+        # notification sentence is prose ("— use chat.check to read
+        # them.") and is never parsed back. Exactly one distinct sender
+        # gets reply context; with several the agent picks chat.send
+        # targets explicitly.
+        self._pending_senders = sorted(
+            {m.get("sender_username", "?") for m in inbox})
+        self._reply_ctx = {"sender": self._pending_senders[0]} \
+            if len(self._pending_senders) == 1 else None
         if inbox:
             # R14 verbatim: notification only (async) — chat.check fetches
-            senders = sorted({m.get("sender_username", "?") for m in inbox})
             lines.append(f"You have {len(inbox)} new message(s) from "
-                         f"{', '.join(senders)} — use chat.check to read "
-                         "them.")
+                         f"{', '.join(self._pending_senders)} — use "
+                         "chat.check to read them.")
         for m in inbox:
             self._pending_inbox_ids.append(m["inbox_id"])
         for w in p.get("wakes", []):
@@ -371,15 +381,9 @@ before guessing parameters. Prefer the narrow tool over the broad one
                 "ts": started.isoformat(), "role": "injection",
                 "content": "\n".join(injections)[:8000],
                 "meta": {"trigger": trigger}})
-            dm_lines = [l for l in injections
-                        # R69: match the real notification formats — the
-                        # old single-message string never occurs anymore
-                        if l.startswith(("You have ", "You have a new"))
-                        and "message" in l]
-            if dm_lines:
-                last = dm_lines[-1]
-                sender = last.split(" from ", 1)[1].split(" received at", 1)[0]
-                self._reply_ctx = {"sender": sender}
+            # issue #7: the auto-reply target (_reply_ctx) is set in
+            # _collect_injections_hosted from structured sender data —
+            # the rendered notification sentence is never parsed back.
 
             closing = False     # R64 closing: failure breakers / explicit cap
             consec_fail = 0     # consecutive tool calls returning ERROR:
