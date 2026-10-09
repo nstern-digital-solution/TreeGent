@@ -21,6 +21,9 @@ Layout:
   memory/qtree/L0.md   entries:  "- [2026-10-08 18:20] <summary>" (append-only)
   memory/qtree/L1.md   …         newest last
   memory/qtree/meta.json          {"0": {"entries": n, "rolled": r}, ...}
+  memory/qtree/raw/<timestamp>.md verbatim copies of summarized material
+                          (issue #9: nothing is destroyed, whatever the
+                          provider does; failure entries point here)
 """
 
 from __future__ import annotations
@@ -61,6 +64,7 @@ def _now() -> datetime:
 def qtree_paths(workspace: str) -> dict:
     base = os.path.join(workspace, QTREE_DIR)
     return {"base": base,
+            "raw": os.path.join(base, "raw"),
             "meta": os.path.join(base, "meta.json")}
 
 
@@ -112,6 +116,23 @@ def _append_entry(workspace: str, level: int, line: str) -> None:
     with open(_level_file(base, level), "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
+def _save_raw(workspace: str, material: str, suffix: str = "") -> str:
+    """Persist `material` VERBATIM under memory/qtree/raw/<timestamp>.md
+    before summarizing (issue #9): whatever the provider does, the
+    compacted material is never destroyed. Returns the path RELATIVE to
+    the workspace, for use inside entries."""
+    p = qtree_paths(workspace)
+    os.makedirs(p["raw"], exist_ok=True)
+    stamp = _now().strftime("%Y-%m-%d_%H-%M-%S")
+    name = f"{stamp}{suffix}.md"
+    n = 0
+    while os.path.exists(os.path.join(p["raw"], name)):
+        n += 1
+        name = f"{stamp}{suffix}-{n}.md"
+    with open(os.path.join(p["raw"], name), "w", encoding="utf-8") as f:
+        f.write(material)
+    return os.path.join(QTREE_DIR, "raw", name)
+
 
 def unrolled_count(workspace: str, level: int) -> int:
     """How many NEW entries at this level await rollup (4 = roll)."""
@@ -122,18 +143,35 @@ def unrolled_count(workspace: str, level: int) -> int:
 # generation
 # --------------------------------------------------------------------------
 
+_TRUNCATED_MARK = "[TRUNCATED — unsummarized, full text in {ref}]"
+
+def _placeholder(material: str, limit: int, full_ref: str) -> str:
+    """Fallback ENTRY text when summarization is unavailable (issue #9):
+    keep the head AND the tail of `material` with an explicit marker
+    pointing at the full text — never the old silent material[:limit]
+    head-truncation that kept 2.6% and destroyed the newest material."""
+    mark = _TRUNCATED_MARK.format(ref=full_ref)
+    if len(material) + len(mark) + 1 <= limit:
+        return f"{mark} {material}"
+    room = limit - len(mark) - 2      # one separator on each side of mark
+    if room <= 0:
+        return mark
+    head = room // 2
+    tail = room - head
+    return f"{material[:head]} {mark} {material[-tail:]}"
+
 async def _summarize(material: str, limit: int, gen_fn) -> str:
-    """gen_fn(prompt) -> str; returns material unchanged if generation is
-    unavailable (never fail a turn because memory could not be written)."""
-    try:
-        out = await gen_fn(_SUMMARY_PROMPT.format(material=material,
-                                                  limit=limit))
-    except Exception as e:  # noqa: BLE001 — memory must never break the loop
-        print(f"[qtree] summarize failed ({e}); keeping raw tail",
-              file=sys.stderr)
-        return material[:limit]
+    """gen_fn(prompt) -> str. RAISES when generation is unavailable or
+    returns nothing — the caller has already persisted `material`
+    verbatim and turns the failure into a head+tail placeholder pointing
+    at that raw file (issue #9: the old `return material[:limit]` here
+    silently destroyed all but an ancient 2.6% sliver)."""
+    out = await gen_fn(_SUMMARY_PROMPT.format(material=material,
+                                              limit=limit))
     out = (out or "").strip()
-    return out if out else material[:limit]
+    if not out:
+        raise RuntimeError("summary generation returned empty output")
+    return out
 
 
 async def record_compaction(workspace: str, dropped: list[dict],
@@ -141,17 +179,35 @@ async def record_compaction(workspace: str, dropped: list[dict],
     """Called after a turn when `dropped` messages left the context.
     Summarizes them into a fresh L0 entry, then rolls up while a level
     holds 4 UNROLLED entries (children are kept on disk — the quadtree
-    never loses fine detail, the pointer just advances)."""
+    never loses fine detail, the pointer just advances).
+
+    Issue #9: `dropped` is persisted VERBATIM to memory/qtree/raw/
+    before summarizing. If summarization fails, a head+tail placeholder
+    pointing at that raw file is written and the error RE-RAISED — the
+    caller (maybe_compact) then leaves the live context untouched and
+    the next turn retries compaction. A provider blip must never
+    destroy material."""
     if not dropped:
         return {"entries": 0}
     material = "\n".join(
         f"[{m.get('role')}] {m.get('content') or ''}" for m in dropped)
     stamp = _now().strftime("%Y-%m-%d %H:%M")
-    summary = await _summarize(material, COMPACT_ENTRY_MAX, gen_fn)
+    entry_budget = COMPACT_ENTRY_MAX - len(f"- [{stamp}] ")  # line_for head
+    raw_ref = _save_raw(workspace, material)
+    meta = load_meta(workspace)
+    try:
+        summary = await _summarize(material, COMPACT_ENTRY_MAX, gen_fn)
+    except Exception as e:  # noqa: BLE001 — memory must never break the loop
+        print(f"[qtree] summarize failed ({e}); raw kept in {raw_ref}",
+              file=sys.stderr)
+        _append_entry(workspace, 0, line_for(
+            _placeholder(material, entry_budget, raw_ref), stamp))
+        _lvl(meta, 0)["entries"] += 1
+        _save_meta(workspace, meta)
+        raise     # issue #9: caller must NOT drop the messages
     line = line_for(summary, stamp)
     _append_entry(workspace, 0, line)
 
-    meta = load_meta(workspace)
     _lvl(meta, 0)["entries"] += 1
     rolled = 0
     level = 0
@@ -159,7 +215,17 @@ async def record_compaction(workspace: str, dropped: list[dict],
         entries = read_entries(workspace, level)
         m = _lvl(meta, level)
         four = entries[m["rolled"]:m["rolled"] + COMPACT_FANOUT]
-        summary = await _summarize("\n".join(four), COMPACT_ENTRY_MAX, gen_fn)
+        up = "\n".join(four)
+        up_ref = _save_raw(workspace, up, suffix=f"-roll-L{level}")
+        try:
+            summary = await _summarize(up, COMPACT_ENTRY_MAX, gen_fn)
+        except Exception as e:  # noqa: BLE001 — the L0 entry is already
+            # written (partially succeeded): the rollup entry must still
+            # exist, so keep head+tail with the raw pointer (issue #9)
+            # and continue — never a silent head-truncation.
+            print(f"[qtree] rollup failed ({e}); raw kept in {up_ref}",
+                  file=sys.stderr)
+            summary = _placeholder(up, entry_budget, up_ref)
         _append_entry(workspace, level + 1, line_for(summary, stamp))
         _lvl(meta, level + 1)["entries"] += 1
         m["rolled"] += COMPACT_FANOUT
