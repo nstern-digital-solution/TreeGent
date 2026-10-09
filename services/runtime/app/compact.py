@@ -46,6 +46,15 @@ async def maybe_compact(agent) -> dict:
         acc_msgs += 1
     if not drop_idx:
         return {}
+    # Issue #12: the cut may land mid tool-exchange — extend the drop set
+    # past tool results whose parent assistant(tool_calls) was dropped.
+    # A kept leading 'tool' message 400s strict providers every turn.
+    for i, m in enumerate(msgs):
+        if i in drop_idx or m.get("role") == "system":
+            continue
+        if m.get("role") != "tool":
+            break
+        drop_idx.add(i)
     dropped = [m for i, m in enumerate(msgs) if i in drop_idx]
     agent.messages = [m for i, m in enumerate(msgs) if i not in drop_idx]
 
