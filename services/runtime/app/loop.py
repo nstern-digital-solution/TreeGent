@@ -218,15 +218,30 @@ before guessing parameters. Prefer the narrow tool over the broad one
         # ALL undelivered rows, so a message arriving mid-turn was acked
         # without ever being injected (silent loss). Hosted tier already
         # did this; central now matches.
-        for m in inbox.get("messages", []):
+        rows = inbox.get("messages", [])
+        for m in rows:
             iid = m.get("inbox_id") or m.get("_id")
             if iid:
                 self._pending_inbox_ids.append(iid)
+        # issue #27: derive the reply target from structured sender data —
+        # same contract as the hosted collect (loop.py:290-292). Central
+        # used to render a sender-less line and set no reply context, so a
+        # human DMing a central-tier agent never got an answer (the
+        # auto-post at turn end only fires `if self._reply_ctx`). One
+        # distinct sender -> reply context; several -> the agent picks
+        # chat.send targets explicitly (identical to hosted).
+        self._pending_senders = sorted(
+            {m.get("sender_username", "?") for m in rows})
+        self._reply_ctx = {"sender": self._pending_senders[0]} \
+            if len(self._pending_senders) == 1 else None
         if n:
             self._pending_central = True   # R68: ack-mark BEFORE building
             # R14 verbatim: notification only — the agent pulls content via
-            # chat.check (async messaging; bodies never ride in context)
-            lines.append(f"You have {n} new message(s) waiting — use "
+            # chat.check (async messaging; bodies never ride in context).
+            # issue #27: name the senders (parity with hosted) so the model
+            # sees the same contract on both tiers.
+            lines.append(f"You have {n} new message(s) from "
+                         f"{', '.join(self._pending_senders)} — use "
                          "chat.check to read them.")
         # 2) unconsumed wake events of other kinds
         wakes = [w async for w in _cdb().wake_events.find(

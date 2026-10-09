@@ -101,16 +101,20 @@ def make_agent(inbox, stub_collect=None, tool_result="sent"):
 
 
 def test_central_notification_no_crash():
-    """Kept from #19: the central line has NO ' from ' section — the old
-    split(...)[1] raised IndexError on every central event turn (caught as
-    CRASHED, zero steps). The turn must run and leave _reply_ctx None."""
+    """Kept from #19/#8a: parsing the central notification sentence used to
+    raise IndexError on every central event turn (caught as CRASHED, zero
+    steps). The turn must still run. NOTE (issue #27): _reply_ctx is NO
+    LONGER None on the central path — the central collect now derives it
+    from structured sender data like hosted (see
+    test_issue27_central_reply.py). This test keeps the crash guard with an
+    EMPTY inbox (no rows => no sender => None, no crash)."""
     a = make_agent([], stub_collect=[CENTRAL_LINE])
     asyncio.run(a.run_turn("event"))
     assert a.gens, "turn must reach a generation (was: IndexError, 0 steps)"
-    assert a._reply_ctx is None, "no sender exists in the central format"
+    assert a._reply_ctx is None, "empty central notification => no sender"
     assert not [c for c in a.tool_calls if c[0] == "chat.send"], \
-        "nothing to auto-post to on a central notification"
-    print("PASS central line: turn runs, no IndexError, _reply_ctx stays None")
+        "nothing to auto-post to with no sender"
+    print("PASS central line: turn runs, no IndexError, empty inbox => None")
 
 
 def test_reply_ctx_reset_per_turn():
