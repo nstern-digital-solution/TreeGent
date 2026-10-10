@@ -210,3 +210,122 @@ def test_rejected_reparent_keeps_secret_isolation(client, world):
     assert peer1["org"]["ancestors"] == [W["rootuser"]]
     assert peer1["org"]["parent_id"] == W["rootuser"]
     assert W["peer2"] not in peer1["org"]["ancestors"]
+
+
+# --- 7. conversation membership policy (issue #22) ----------------------
+
+def test_create_conv_members_must_be_in_creator_subtree(client, world):
+    """Issue #22 regression: an agent key could open a channel with every
+    human and read everything silently. Members must now lie inside the
+    creator's org subtree (root is exempt: the whole tree is their
+    subtree)."""
+    # the report's exploit, verbatim: agent key + channel with all humans
+    denied(client, lambda: client.post("/conversations", json={
+        "kind": "channel", "name": "standup",
+        "member_ids": [W["rootuser"], W["clerk"], W["peer1"]]},
+        headers=key_hdr(W["peer2_key"])))
+    names = [c["name"] for c in
+             client.get("/conversations", headers=hdr(W["rootuser"])).json()]
+    assert "standup" not in names
+    # same policy for a non-root human without descendants
+    denied(client, lambda: client.post("/conversations", json={
+        "kind": "channel", "name": "clerk-grab", "member_ids": [W["peer2"]]},
+        headers=hdr(W["clerk"])))
+    # positive: a creator may include its own subtree
+    r = client.post("/actors", json={
+        "username": "sub1", "display_name": "Sub One", "kind": "agent",
+        "parent_id": W["peer1"]}, headers=hdr(W["rootuser"]))
+    assert r.status_code == 201, r.text
+    W["sub1"] = r.json()["id"]
+    r = client.post("/conversations", json={
+        "kind": "channel", "name": "team1", "member_ids": [W["sub1"]]},
+        headers=key_hdr(W["peer1_key"]))
+    assert r.status_code == 201, r.text
+    assert sorted(r.json()["members"]) == sorted([W["peer1"], W["sub1"]])
+    W["team1"] = r.json()["id"]
+    # ...but the subtree never stretches to peers
+    denied(client, lambda: client.post("/conversations", json={
+        "kind": "channel", "name": "team2",
+        "member_ids": [W["sub1"], W["peer2"]]},
+        headers=key_hdr(W["peer1_key"])))
+    # root keeps picking anyone (company channels stay possible)
+    r = client.post("/conversations", json={
+        "kind": "channel", "name": "company",
+        "member_ids": [W["clerk"], W["peer1"], W["peer2"]]},
+        headers=hdr(W["rootuser"]))
+    assert r.status_code == 201, r.text
+    assert sorted(r.json()["members"]) == sorted(
+        [W["rootuser"], W["clerk"], W["peer1"], W["peer2"]])
+
+
+def test_add_member_only_creator_or_root(client, world):
+    """Issue #22 regression: any member could add ANYONE to a channel
+    (agent keys included). Adding third parties is now creator/root-only,
+    bounded by the creator's subtree; a plain member can only re-add
+    itself and a non-member cannot join at all."""
+    conv = W["conv"]   # created by rootuser; members rootuser/peer1/peer2
+    # plain member may not pull a third party in (header or agent key)
+    denied(client, lambda: client.post(f"/conversations/{conv}/members",
+        json={"member_ids": [W["clerk"]]}, headers=hdr(W["peer1"])))
+    denied(client, lambda: client.post(f"/conversations/{conv}/members",
+        json={"member_ids": [W["clerk"]]}, headers=key_hdr(W["peer1_key"])))
+    # a non-member cannot self-join — existing private chats stay closed
+    denied(client, lambda: client.post(f"/conversations/{conv}/members",
+        json={"member_ids": [W["clerk"]]}, headers=hdr(W["clerk"])))
+    # a member of team1 (sub1, non-creator) cannot pull peers in either
+    denied(client, lambda: client.post(f"/conversations/{W['team1']}/members",
+        json={"member_ids": [W["peer2"]]}, headers=hdr(W["sub1"])))
+    # self re-add is a harmless no-op for members
+    r = client.post(f"/conversations/{conv}/members",
+                    json={"member_ids": [W["peer1"]]}, headers=hdr(W["peer1"]))
+    assert r.status_code == 200, r.text
+    assert sorted(r.json()["members"]) == sorted(
+        [W["rootuser"], W["peer1"], W["peer2"]])
+    # a non-root creator is still bounded by its subtree when adding
+    denied(client, lambda: client.post(f"/conversations/{W['team1']}/members",
+        json={"member_ids": [W["peer2"]]}, headers=key_hdr(W["peer1_key"])))
+    # root may add a third party anywhere (moderation)
+    r = client.post(f"/conversations/{W['team1']}/members",
+                    json={"member_ids": [W["clerk"]]}, headers=hdr(W["rootuser"]))
+    assert r.status_code == 200, r.text
+    assert W["clerk"] in r.json()["members"]
+    # restore
+    r = client.delete(f"/conversations/{W['team1']}/members/{W['clerk']}",
+                      headers=hdr(W["rootuser"]))
+    assert r.status_code == 200, r.text
+    assert W["clerk"] not in r.json()["members"]
+
+
+def test_remove_member_only_self_creator_or_root(client, world):
+    """Issue #22 regression: any member could remove ANYONE from a
+    channel. Leaving is self-only; third-party removal is creator/root
+    moderation."""
+    conv = W["conv"]
+    # plain member may not pull a third party out (header or agent key)
+    denied(client, lambda: client.delete(
+        f"/conversations/{conv}/members/{W['peer2']}", headers=hdr(W["peer1"])))
+    denied(client, lambda: client.delete(
+        f"/conversations/{conv}/members/{W['peer2']}",
+        headers=key_hdr(W["peer1_key"])))
+    # leaving on one's own is fine
+    r = client.delete(f"/conversations/{conv}/members/{W['peer2']}",
+                      headers=key_hdr(W["peer2_key"]))
+    assert r.status_code == 200, r.text
+    assert W["peer2"] not in r.json()["members"]
+    # creator (root here) puts things back
+    r = client.post(f"/conversations/{conv}/members",
+                    json={"member_ids": [W["peer2"]]}, headers=hdr(W["rootuser"]))
+    assert r.status_code == 200, r.text
+    assert sorted(r.json()["members"]) == sorted(
+        [W["rootuser"], W["peer1"], W["peer2"]])
+    # a non-root creator moderates its own team channel
+    r = client.delete(
+        f"/conversations/{W['team1']}/members/{W['sub1']}",
+        headers=key_hdr(W["peer1_key"]))
+    assert r.status_code == 200, r.text
+    assert W["sub1"] not in r.json()["members"]
+    # restore (creator re-adds within its subtree)
+    r = client.post(f"/conversations/{W['team1']}/members",
+                    json={"member_ids": [W["sub1"]]}, headers=key_hdr(W["peer1_key"]))
+    assert r.status_code == 200, r.text
+    assert sorted(r.json()["members"]) == sorted([W["peer1"], W["sub1"]])
