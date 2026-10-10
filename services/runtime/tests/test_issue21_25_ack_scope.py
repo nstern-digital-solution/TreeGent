@@ -228,9 +228,17 @@ def test_crashed_turn_acks_only_collected_ids(monkeypatch):
     assert len(posts) == 1, \
         "crashed turn must still ack its collected rows (R68 safety net)"
     assert posts[0]["inbox_ids"] == ["in_9"], posts[0]
-    assert wake_updates(db) == [], \
-        "blanket wake ack consumed wke_dm the agent never saw " \
-        "(silent loss on crashed turns, issue #25)"
+    # issue #39/#40 changed this expectation: dm/mention wakes are NOW
+    # fetched+recorded centrally, so the crashed-turn safety net acks
+    # wke_dm (scoped to the recorded id). That is the spin fix — the wake
+    # must not linger unconsumed (has_work -> 5s event loop forever).
+    # The #25 guarantee the ORIGINAL assertion guarded (never ack a wake
+    # the turn never collected) still holds, now expressed as: every acked
+    # wake id is a COLLECTED id (id-scoped, not a blanket sweep).
+    acked = {q[2]["_id"] for q in db.calls
+             if q[1] == "update_one" and q[0] == "wake_events"}
+    assert acked == {"wke_dm"}, \
+        f"safety net acked an uncollected/wrong wake set: {acked}"
     assert blanket_wake_queries(db) == [], \
         "crash safety net must be id-scoped: no unconsumed-wakes sweep"
 
