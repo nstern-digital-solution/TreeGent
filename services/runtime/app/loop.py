@@ -229,9 +229,20 @@ before guessing parameters. Prefer the narrow tool over the broad one
             lines.append(f"You have {n} new message(s) waiting — use "
                          "chat.check to read them.")
         # 2) unconsumed wake events of other kinds
+        # issue #39: dm/mention MUST be fetched centrally too. Their
+        # content rides in the inbox rows (section 1) — but the wake
+        # itself still has to be recorded and acked, or it stays
+        # unconsumed forever: has_work counts any unconsumed wake
+        # (no reason filter, ~line 690) -> True -> the supervisor
+        # fires an empty event turn every 5s for the wake's 7-day
+        # TTL, starving heartbeats. Hosted already does exactly this
+        # (loop: reason in ("dm","mention") -> append id, render no
+        # line — 'permanent 5s spin' comment). The render loop below
+        # has no dm/mention branch, so recording here is all it takes.
         wakes = [w async for w in _cdb().wake_events.find(
             {"agent_id": self.id, "consumed": False,
-             "reason": {"$in": ["mail", "approval", "approval-rejected"]}})
+             "reason": {"$in": ["mail", "approval", "approval-rejected",
+                                "dm", "mention"]}})
             .sort("created_at", 1).limit(10)]
         if wakes:
             self._pending_central = True   # R68: ...so a raise mid-collect
