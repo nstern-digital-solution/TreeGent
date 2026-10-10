@@ -29,6 +29,15 @@ async def _startup() -> None:
         await db.mail_adapters.insert_one(
             {"_id": "outbound-default", "direction": "outbound",
              "kind": "sink", "enabled": True})
+    # issue #13: crash recovery (proxy R68 shape) — approvals stranded in
+    # 'dispatching' and requester wakes lost mid-decide must heal without
+    # manual surgery. Requeue once at startup, then a 30s sweep loop.
+    from . import recovery
+    from .config import approvals, wake_events
+    await recovery.requeue_stale(approvals, "startup")
+    await recovery.heal_lost_wakes(approvals, wake_events, "startup")
+    app.state.recovery = asyncio.create_task(
+        recovery.recovery_loop(approvals, wake_events))
     # R49/R52: mailboxes = firstname.lastname@<mail domain> (human
     # convention). Domain is deployment data (TG_MAIL_DOMAIN); falls back to
     # username when no persona exists.
@@ -84,6 +93,13 @@ async def _startup() -> None:
                 # address taken by a LIVE different actor (name collision)
                 print(f"[mail] WARN {addr} owned by live actor "
                       f"{box.get('owner')} — not claiming")
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    task = getattr(app.state, "recovery", None)
+    if task:
+        task.cancel()
 
 
 @app.get("/health")
