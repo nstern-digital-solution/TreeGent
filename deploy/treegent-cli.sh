@@ -39,9 +39,11 @@ cmd_status() {
     err "  service:   treegent $(systemctl is-active treegent 2>/dev/null)"
   fi
 
-  # ports (chat 8000 proxy 8001 mail 8002 secrets 8003 files 8004)
+  # ports (chat 8000 proxy 8001 mail 8002 secrets 8003 files 8004
+  # runtime 8010 — issue #29: the loop stopped at 8004 so an agent host's
+  # runtime never got a liveness line; its /health was always 500 anyway)
   say "  ports:"
-  for p in 8000 8001 8002 8003 8004; do
+  for p in 8000 8001 8002 8003 8004 8010; do
     if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$p/health" \
         || curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$p/docs"; then
       ok "    :$p  listening"

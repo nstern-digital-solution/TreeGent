@@ -67,8 +67,15 @@ async def _shutdown() -> None:
 
 @app.get("/health")
 async def health():
+    # issue #29: agent hosts have NO Mongo by design (R56) — the ping
+    # below raised ServerSelectionTimeoutError on EVERY call forever, so
+    # the one endpoint a human reaches for first always 500'd on a box
+    # that was working perfectly. Same tier predicate as _host_health_loop
+    # (settings.host_key set -> hosted runtime, see ~line 38).
+    if settings.host_key:
+        return {"ok": True, "service": "runtime", "tier": "hosted"}
     await client.admin.command("ping")
-    return {"ok": True, "service": "runtime"}
+    return {"ok": True, "service": "runtime", "tier": "central"}
 
 
 @app.get("/internal/agents")
