@@ -70,8 +70,9 @@ class Agent:
         self._pending_wake_ids: list[str] = []
         self._pending_senders: list[str] = []   # issue #7: senders this turn
         # R68: central-mode counterpart of the id lists above — the central
-        # ack path is blanket (agent-inbox-delivered + mark all unconsumed),
-        # but the safety net still needs to know a failed turn left work
+        # ack path is id-scoped too (agent-inbox-delivered with the exact
+        # collected inbox ids + per-id wake consume, issue #25), but the
+        # safety net still needs to know a failed turn left work
         # unconsumed (it used to fire for hosted rows only).
         self._pending_central = False
         self._turn_lines: list[dict] = []       # R57: transcript lines this turn
@@ -339,19 +340,26 @@ before guessing parameters. Prefer the narrow tool over the broad one
             return
         # R69: consume ONLY the ids recorded at collect time. The old
         # blanket form (all unconsumed wakes + all undelivered inbox)
-        # acked messages that arrived mid-turn — silent loss.
-        wake_ids = self._pending_wake_ids or [w["_id"] async for w in
-            _cdb().wake_events.find(
-                {"agent_id": self.id, "consumed": False})
-            .sort("created_at", 1).limit(20)]
-        for wid in wake_ids:
+        # acked messages that arrived mid-turn — silent loss. The crash
+        # safety net below calls this on FAILED turns too, so the two
+        # blanket fallbacks that survived here (an unconsumed-wakes query
+        # when no wake ids were recorded, and POSTing an EMPTY inbox_ids
+        # list — which agent-inbox-delivered reads as "mark EVERY
+        # undelivered row") re-introduced the same loss for rows/wakes the
+        # agent never saw. Id-scoped everywhere: nothing recorded, nothing
+        # acked — the work stays pending for the next poll instead of
+        # being silently eaten.
+        for wid in self._pending_wake_ids:
             await _cdb().wake_events.update_one({"_id": wid},
                                             {"$set": {"consumed": True}})
-        await self.svcs._call(settings.chat_url,
-                              "/internal/agent-inbox-delivered",
-                              "POST", body={
-                                  "agent_id": self.id,
-                                  "inbox_ids": self._pending_inbox_ids})
+        if self._pending_inbox_ids:
+            # never POST an empty list — the endpoint's legacy mode
+            # blanket-acks every undelivered row on an empty list
+            await self.svcs._call(settings.chat_url,
+                                  "/internal/agent-inbox-delivered",
+                                  "POST", body={
+                                      "agent_id": self.id,
+                                      "inbox_ids": self._pending_inbox_ids})
         self._pending_inbox_ids, self._pending_wake_ids = [], []
 
     async def heartbeat_due(self) -> bool:
@@ -625,7 +633,11 @@ before guessing parameters. Prefer the narrow tool over the broad one
             # it ran after the try/finally before, so an exception skipped
             # it): if the turn ended without consuming — failed generation,
             # raise mid-collect, whatever — consume now. A dead proxy must
-            # never retrigger the same wake every 5s forever.
+            # never retrigger the same wake every 5s forever. Issue #25:
+            # the consume is strictly id-scoped (exactly the ids collected
+            # THIS turn) — a crashed turn must never blanket-ack rows and
+            # wakes the agent never saw; those stay pending for the next
+            # poll.
             if trigger == "event" and (self._pending_inbox_ids
                                        or self._pending_wake_ids
                                        or self._pending_central):

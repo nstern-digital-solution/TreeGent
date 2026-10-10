@@ -36,7 +36,15 @@ async def agent_inbox(agent_id: str, _: None = Depends(require_service_only)):
         if not msg:
             continue
         sender = await db.actors.find_one({"_id": msg["sender_id"]})
+        # issue #25: emit the inbox row id (parity with hosttier pending).
+        # The runtime records these and acks id-scoped via
+        # agent-inbox-delivered (whose q matches _id — the MESSAGE id is a
+        # different id space and would match zero rows); without this field
+        # the ack ids were empty and the endpoint fell back to a blanket
+        # ack = messages arriving mid-turn were marked delivered without
+        # ever being injected (silent loss).
         out.append({"message_id": msg["_id"],
+                    "inbox_id": row["_id"],
                     "sender_username": (sender or {}).get("username", "?"),
                     "body": msg.get("body", ""),
                     "received_at": row.get("received_at")})

@@ -49,9 +49,12 @@ async def _dispatch(conv: dict, msg: dict) -> int:
             wake.add(a)
     wake = {w for w in wake if w != msg["sender_id"]}
     ops = []
-    for m in conv["members"]:
-        if m == msg["sender_id"]:
-            continue
+    # issue #21: inbox rows go to the WAKE set only (R3) — rows used to be
+    # written for EVERY member, so a 100-member channel broadcast queued
+    # 98 rows nobody was notified about and starved real DM/mention rows
+    # out of the oldest-first pending pages. The sender never gets a row;
+    # channel history stays available via GET /{conv}/messages.
+    for m in sorted(wake):
         ops.append(db.inbox.insert_one({
             "_id": idgen.oid(),
             "message_id": msg["_id"],
