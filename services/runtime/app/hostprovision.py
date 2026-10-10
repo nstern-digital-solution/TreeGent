@@ -149,9 +149,21 @@ PLAYWRIGHT_BROWSERS_PATH=/var/lib/treegent/pw-browsers \\
 # 4) runtime-only env file (NEVER the service token; the runtime
 #    authenticates as agents with agent keys, not as the central web)
 install -d -m 755 /etc/treegent
-cat > /etc/treegent/runtime.env <<'ENVEOF'
+# Issue #23: a re-provision must NOT rotate the host key the box already
+# holds (rotation on every retry is what churned keys before) — reuse the
+# key when this runtime.env belongs to THIS host, else take the freshly
+# generated one.
+HOST_KEY='{host_key}'
+if [ -f /etc/treegent/runtime.env ]; then
+  OLD_ID=$(grep -m1 '^TG_RUNTIME_HOST_ID=' /etc/treegent/runtime.env | cut -d= -f2- || true)
+  OLD_KEY=$(grep -m1 '^TG_RUNTIME_HOST_KEY=' /etc/treegent/runtime.env | cut -d= -f2- || true)
+  if [ "$OLD_ID" = '{host_id}' ] && [ -n "$OLD_KEY" ]; then
+    HOST_KEY="$OLD_KEY"
+  fi
+fi
+cat > /etc/treegent/runtime.env <<ENVEOF
 TG_RUNTIME_HOST_ID={host_id}
-TG_RUNTIME_HOST_KEY={host_key}
+TG_RUNTIME_HOST_KEY=$HOST_KEY
 TG_RUNTIME_EXEC_ENABLED=true
 TG_RUNTIME_EXEC_USER=tgexec
 TG_RUNTIME_SERVICE_TOKEN={rt_token}
@@ -165,6 +177,12 @@ TG_RUNTIME_PORT=8010
 PLAYWRIGHT_BROWSERS_PATH=/var/lib/treegent/pw-browsers
 ENVEOF
 chmod 600 /etc/treegent/runtime.env
+# Issue #23: env-write completion signal. Central commits host_key_hash
+# ONLY off this marker (hash = sha256 of the key the file actually holds,
+# i.e. the stored form itself, safe for logs) — a script that dies BEFORE
+# this line leaves the box on its OLD key, and the OLD hash must survive
+# central-side or every host-key auth on the box is rejected forever.
+echo "[provision] env-written keyhash=$(printf '%s' "$HOST_KEY" | sha256sum | cut -d' ' -f1)"
 
 # 5) systemd unit: runtime daemon as treegent, exec as tgexec (R46)
 cat > /etc/systemd/system/treegent-agent.service <<UNITEOF
@@ -198,31 +216,97 @@ echo "[provision] done — treegent-agent.service active"
     return script, host_key
 
 
+# Issue #23: the provision script signals the exact moment the NEW env is
+# on the box by echoing this marker + the sha256 of the host key it wrote
+# (sha256 is the stored form — the same value kept in agent_hosts, safe
+# for logs). Central commits host_key_hash ONLY from this marker.
+ENV_MARKER = "[provision] env-written keyhash="
+
+
+def parse_env_marker(output: str | None) -> str | None:
+    """The hash of the host key the box demonstrably holds, or None.
+
+    None means the script never got as far as writing
+    /etc/treegent/runtime.env (or the marker was garbled) — the box is
+    still on its OLD key (if it ever had one)."""
+    for line in (output or "").splitlines():
+        line = line.strip()
+        if line.startswith(ENV_MARKER):
+            h = line[len(ENV_MARKER):].strip().lower()
+            if len(h) == 64 and all(c in "0123456789abcdef" for c in h):
+                return h
+    return None
+
+
+def provision_hash_decision(env_hash: str | None, ok: bool) -> str | None:
+    """Issue #23: which host_key_hash survives a provision attempt.
+
+    The hash commits ONLY when the box demonstrably holds the key (the
+    env-written marker) — never merely because an attempt started. The
+    old code committed the fresh hash BEFORE ssh_run, so any failure left
+    the box on its old runtime.env while central validated a hash no box
+    held: verify_host_key rejected forever ("host credentials rejected",
+    every agent on the box dead) while the dashboard said 'active'.
+    Restoring the old hash on failure (the obvious fix) is ALSO wrong:
+    the script writes the env mid-script, so a post-env-write failure
+    leaves the box on the NEW key and breaks auth the same way.
+
+    (env-written x rc) decision table:
+      marker,    rc == 0  -> commit the box-signaled hash
+      marker,    rc != 0  -> STILL commit the box-signaled hash (the env
+                             landed mid-script; the box now holds that
+                             key — keeping the old hash re-bricks auth)
+      no marker, rc != 0  -> None = keep the recorded hash (pre-env-write
+                             failure: the box's OLD key is still live)
+      no marker, rc == 0  -> None = keep the recorded hash (defensive:
+                             never record a hash for a key we cannot
+                             prove landed)
+
+    Returns the hash to commit, or None to leave the recorded hash
+    untouched."""
+    # rc is a decision-table dimension only: the commit couples to the
+    # env-write outcome exactly so rc != 0 cannot re-brick auth.
+    _ = ok
+    return env_hash
+
+
 async def provision_host(host_doc: dict) -> dict:
     """SSH in and provision. Updates the host row with status + log."""
     hid = host_doc["_id"]
     script, host_key = _agenthost_script(hid)
+    # Issue #23: do NOT touch host_key_hash up-front — the box keeps its
+    # OLD runtime.env unless the script gets as far as writing the new one.
+    # The hash is committed (or kept) after the attempt, per
+    # provision_hash_decision.
     await db.agent_hosts.update_one(
         {"_id": hid}, {"$set": {"status": "provisioning",
-                                "host_key_hash": hash_host_key(host_key),
                                 "provision_started_at": _now()}})
     try:
         r = await asyncio.to_thread(
             ssh_run, hid, host_doc["address"], host_doc.get("port", 22),
             host_doc.get("ssh_user", "root"), script)
         ok = r["rc"] == 0
-        await db.agent_hosts.update_one(
-            {"_id": hid},
-            {"$set": {"status": "active" if ok else "failed",
-                      "last_log": (r["stdout"] + "\\n" + r["stderr"])[-2000:],
-                      "provisioned_at": _now() if ok else None}})
+        fields = {"status": "active" if ok else "failed",
+                  "last_log": (r["stdout"] + "\\n" + r["stderr"])[-2000:],
+                  "provisioned_at": _now() if ok else None}
+        commit = provision_hash_decision(parse_env_marker(r["stdout"]), ok)
+        if commit:
+            fields["host_key_hash"] = commit
+        await db.agent_hosts.update_one({"_id": hid}, {"$set": fields})
         return {"ok": ok, "log": r["stdout"][-1500:],
                 "stderr": r["stderr"][-500:] if not ok else ""}
     except Exception as e:  # noqa: BLE001
-        await db.agent_hosts.update_one(
-            {"_id": hid},
-            {"$set": {"status": "failed",
-                      "last_log": f"ssh error: {e}"[:2000]}})
+        # TimeoutExpired carries the partial captured output — the marker
+        # may be in it even though the attempt failed (ssh killed late).
+        partial = getattr(e, "stdout", None)
+        if isinstance(partial, bytes):
+            partial = partial.decode(errors="replace")
+        fields = {"status": "failed",
+                  "last_log": f"ssh error: {e}"[:2000]}
+        commit = provision_hash_decision(parse_env_marker(partial), False)
+        if commit:
+            fields["host_key_hash"] = commit
+        await db.agent_hosts.update_one({"_id": hid}, {"$set": fields})
         return {"ok": False, "log": f"ssh error: {e}"}
 
 
@@ -242,7 +326,25 @@ else
 fi
 UPT=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)
 LOAD=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo 0)
-echo "svc=$SVC ver=$VER uptime=$UPT load=$LOAD"
+# Issue #23: auth-consistency probe. systemctl says nothing about whether
+# the box's host key still matches the hash central validates against —
+# ask the real auth path (chat /internal/host) with the key recorded ON
+# THE BOX and report only the HTTP status. 401 = key/hash divergence:
+# the host is auth-failed and needs re-provision. The key itself never
+# leaves the box.
+AUTH=skip
+if [ -f /etc/treegent/runtime.env ]; then
+  HI=$(grep -m1 '^TG_RUNTIME_HOST_ID=' /etc/treegent/runtime.env | cut -d= -f2- || true)
+  HK=$(grep -m1 '^TG_RUNTIME_HOST_KEY=' /etc/treegent/runtime.env | cut -d= -f2- || true)
+  CU=$(grep -m1 '^TG_CHAT_URL=' /etc/treegent/runtime.env | cut -d= -f2- || true)
+  if [ -n "${HI:-}" ] && [ -n "${HK:-}" ] && [ -n "${CU:-}" ]; then
+    AUTH=$(curl -s -o /dev/null -m 10 -w '%{http_code}' \
+      -H "X-Host-Id: $HI" -H "X-Host-Key: $HK" \
+      "$CU/internal/host/agents" || true)
+    AUTH=${AUTH:-err}
+  fi
+fi
+echo "svc=$SVC ver=$VER uptime=$UPT load=$LOAD auth=$AUTH"
 """
 
 
@@ -310,15 +412,17 @@ def _central_commit_short() -> str:
 
 
 def check_host_sync(host_doc: dict) -> dict:
-    """SSH probe: service state, repo version, uptime, load. Updates the
-    host row (status active|stopped|unreachable, last_seen, version...)."""
+    """SSH probe: service state, repo version, uptime, load, auth
+    consistency. Updates the host row (status active|stopped|unreachable|
+    auth-failed, last_seen, version...)."""
     hid = host_doc["_id"]
     try:
         r = ssh_run(hid, host_doc["address"], host_doc.get("port", 22),
                     host_doc.get("ssh_user", "root"), CHECK_SCRIPT, timeout=30)
     except Exception as e:  # noqa: BLE001
         r = {"rc": -1, "stdout": "", "stderr": str(e)}
-    fields = {"svc": "unknown", "ver": "none", "uptime": "0", "load": "0"}
+    fields = {"svc": "unknown", "ver": "none", "uptime": "0", "load": "0",
+              "auth": "skip"}
     if r["rc"] == 0:
         for kv in r["stdout"].strip().splitlines():
             for part in kv.split():
@@ -327,6 +431,12 @@ def check_host_sync(host_doc: dict) -> dict:
                     if k in fields:
                         fields[k] = v
         status = "active" if fields["svc"] == "active" else "stopped"
+        if fields["auth"] == "401":
+            # Issue #23: the box's host key no longer matches the recorded
+            # hash — its agents cannot authenticate (host credentials
+            # rejected). This must NEVER be reported 'active'; the host
+            # needs re-provision, which re-syncs key and hash together.
+            status = "auth-failed"
     else:
         status = "unreachable"
     ver = fields["ver"]
@@ -335,6 +445,8 @@ def check_host_sync(host_doc: dict) -> dict:
               "host_version": ver, "host_version_short": ver_short,
               "uptime_s": int(fields["uptime"] or 0),
               "load1": float(fields["load"] or 0),
+              "auth_probe": fields["auth"],
+              "needs_reprovision": fields["auth"] == "401",
               "last_seen": _now() if status != "unreachable" else None}
     return update
 

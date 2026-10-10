@@ -43,6 +43,13 @@ async def _host_health_loop() -> None:
             async for h in db.agent_hosts.find():
                 try:
                     update = await asyncio.to_thread(check_host_sync, h)
+                    # Issue #23: auth-consistency probe (rider in
+                    # check_host_sync's SSH script — the box curls the chat
+                    # host tier with ITS recorded key): on 401 the box's key
+                    # and the recorded hash diverged and the host is
+                    # auth-failed / needs re-provision — never 'active'.
+                    if update.get("auth_probe") == "401":
+                        update["status"] = "auth-failed"
                     await db.agent_hosts.update_one({"_id": h["_id"]}, {"$set": update})
                 except Exception as e:  # noqa: BLE001
                     print(f"[host-health] host {h.get('_id')}: {e}")
@@ -251,11 +258,15 @@ async def update_host(host_id: str, x_service_token: str = Header(default=""),
         ssh_run, host_id, h["address"], h.get("port", 22),
         h.get("ssh_user", "root"), update_script(sha), timeout=600)
     ok = r["rc"] == 0
+    # Issue #23: an update never touches the host key — a host marked
+    # auth-failed (key/hash divergence) stays auth-failed until it is
+    # actually re-provisioned, never flipped back to 'active' here.
+    ok_status = "active" if h.get("status") != "auth-failed" else "auth-failed"
     await db.agent_hosts.update_one(
         {"_id": host_id},
         {"$set": {"host_version": sha if ok else (h.get("host_version") or ""),
                   "host_version_short": sha[:7] if ok else (h.get("host_version_short") or ""),
-                  "status": ("active" if ok else h.get("status")),
+                  "status": (ok_status if ok else h.get("status")),
                   "last_update": _now_iso() if ok else None,
                   "last_update_log": (r["stdout"] + r["stderr"])[-1000:]}})
     return {"ok": ok, "log": r["stdout"][-600:], "stderr": r["stderr"][-300:] if not ok else ""}
