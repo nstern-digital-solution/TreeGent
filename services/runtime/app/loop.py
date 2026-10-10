@@ -424,11 +424,24 @@ before guessing parameters. Prefer the narrow tool over the broad one
                     err = (result or {}).get("error", "timeout")
                     print(f"[turn] {self.name} generation failed: "
                           f"{str(err)[:200]}")
-                    final_text = f"[generation failed: {err}]"
+                    # issue #28: err carries the provider's REMOTE error
+                    # bytes (dispatcher ProviderError embeds r.text[:200],
+                    # stored str(e)[:500]) — injected as role=user it read
+                    # back as a human utterance, and as final_text it was
+                    # auto-posted verbatim to whoever was waiting. Same
+                    # class R74 fixed for auto-post results: plumbing is
+                    # role=system and never quotes raw remote bodies into
+                    # content a human receives. Raw err stays in the LOGS
+                    # above and in the transcript meta; the context and
+                    # the human get a bounded, newline-collapsed excerpt.
+                    excerpt = " ".join(str(err)[:200].split())[:160]
+                    final_text = ("[generation failed — see transcript; "
+                                  "you may retry next turn]")
                     self.messages.append(
-                        {"role": "user",
-                         "content": f"[generation failed: {err}] "
-                                    "Stop this turn; you may retry next turn."})
+                        {"role": "system",
+                         "content": f"[proxy error: {excerpt}] "
+                                    "Stop this turn; you may retry next "
+                                    "turn."})
                     break
                 msg = result["result"]["choices"][0]["message"]
                 assistant: dict = {"role": "assistant",
