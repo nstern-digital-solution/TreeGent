@@ -158,5 +158,38 @@ async def delete_actor(actor_id: str, actor: dict = Depends(ORG_ADMIN)):
     await db.agent_keys.update_many({"agent_id": actor_id},
                                     {"$set": {"revoked": True}})
     await db.wake_events.delete_many({"agent_id": actor_id})
+    # issue #20: the mail service's `approvals` name actors in BOTH roles
+    # (requester_id + approver_id) — deleting the actor orphaned rows that
+    # nobody could see or decide and left its mail pending forever. Remove
+    # every row naming it (root rescue covers pre-fix orphans), settle any
+    # still-pending mail behind a removed approval (it can never be decided
+    # again) and drop the wakes pointing at the removed approvals.
+    removed, dead_mail = [], []
+    async for ap in db.approvals.find(
+            {"$or": [{"requester_id": actor_id}, {"approver_id": actor_id}]},
+            {"_id": 1, "payload.mail_id": 1}):
+        removed.append(ap["_id"])
+        mid = (ap.get("payload") or {}).get("mail_id")
+        if mid:
+            dead_mail.append(mid)
+    if removed:
+        await db.approvals.delete_many({"_id": {"$in": removed}})
+        await db.wake_events.delete_many({"approval_id": {"$in": removed}})
+    if dead_mail:
+        await db.mail_messages.update_many(
+            {"_id": {"$in": dead_mail}, "status": "pending"},
+            {"$set": {"status": "failed"}})
+    # same gap for the mailboxes themselves: a personal box dies with its
+    # owner (its mail goes with it); shared boxes keep existing with the
+    # membership pulled — mirrors the conversations handling above.
+    async for mb in db.mailboxes.find(
+            {"$or": [{"owner": actor_id}, {"members": actor_id}]},
+            {"_id": 1, "kind": 1, "owner": 1}):
+        if mb.get("kind") == "personal" and mb.get("owner") == actor_id:
+            await db.mail_messages.delete_many({"mailbox_id": mb["_id"]})
+            await db.mailboxes.delete_one({"_id": mb["_id"]})
+        else:
+            await db.mailboxes.update_one({"_id": mb["_id"]},
+                                          {"$pull": {"members": actor_id}})
     await db.actors.delete_one({"_id": actor_id})
     return {"deleted": actor_id}

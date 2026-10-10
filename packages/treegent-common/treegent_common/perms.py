@@ -65,8 +65,11 @@ RULE_SEEDS = [
     {"_id": "mailboxes.list", "allow": ["own", "member"]},
     {"_id": "mailboxes.read", "allow": ["own", "member", "superior"]},
     {"_id": "mail.send_as", "allow": ["own", "member"]},
-    {"_id": "approvals.read", "allow": ["own"]},
-    {"_id": "approvals.decide", "allow": ["own"]},
+    # issue #20: `root` on read AND decide — a root human can SEE and
+    # rescue any approval whose approver vanished with a deleted actor
+    # (decide-only was incomplete: the orphan stayed invisible).
+    {"_id": "approvals.read", "allow": ["own", "root"]},
+    {"_id": "approvals.decide", "allow": ["own", "root"]},
     # infrastructure (root human only)
     {"_id": "providers.read", "allow": ["root"]},
     {"_id": "providers.edit", "allow": ["root"]},

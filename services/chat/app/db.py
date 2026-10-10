@@ -12,6 +12,11 @@ inbox = db.inbox
 wake_events = db.wake_events
 counters = db.counters
 agent_keys = db.agent_keys
+# mail-owned collections (shared treegent DB) — read/edited by the
+# issue #20 cleanup paths (delete/reparent must not orphan approvals)
+approvals = db.approvals
+mailboxes = db.mailboxes
+mail_messages = db.mail_messages
 
 INDEXES = [
     (actors, [("username", 1)], True),

@@ -6,7 +6,7 @@ is one array lookup, no recursion at read time.
 """
 from fastapi import HTTPException
 
-from . import db
+from . import db, idgen
 
 
 def _node(parent_id: str | None, ancestors: list[str], depth: int) -> dict:
@@ -55,4 +55,39 @@ async def move(actor_id: str, new_parent_id: str | None) -> dict:
             nxt.append(child["_id"])
             changed += 1
         frontier = nxt
-    return {"moved": actor_id, "subtree_updated": changed}
+    # issue #20: a pending approval SNAPSHOTs its approver (the requester's
+    # then-superior) at send time — after a reparent the stale ex-approver
+    # kept the queue entry and deciding rights while the new superior never
+    # saw the send. Reassign the moved actor's PENDING approvals to its new
+    # superior (decided rows are history and stay put) and move the wake
+    # with them. Recompute-on-move was chosen over resolving the approver
+    # from the parent at decide time: the inbox query and the decide gate
+    # both key off approver_id, so a decide-time resolve would leave the
+    # queue pointing at the ex-approver and hide it from the rightful one.
+    reassigned = 0
+    if node["parent_id"]:
+        parent = await db.actors.find_one({"_id": node["parent_id"]})
+        async for ap in db.approvals.find(
+                {"requester_id": actor_id, "status": "pending",
+                 "approver_id": {"$ne": node["parent_id"]}},
+                {"_id": 1, "approver_id": 1}):
+            await db.approvals.update_one(
+                {"_id": ap["_id"]},
+                {"$set": {"approver_id": node["parent_id"]}})
+            # the stale wake points at the ex-approver's queue
+            await db.wake_events.delete_many(
+                {"reason": "approval", "approval_id": ap["_id"],
+                 "agent_id": ap["approver_id"], "consumed": False})
+            if parent and parent.get("kind") == "agent":
+                # deterministic per-recipient wake id — idempotent across
+                # repeated moves, never collides with the send-time wake
+                await db.wake_events.update_one(
+                    {"_id": f"wke_appr_{ap['_id']}_{node['parent_id']}"},
+                    {"$setOnInsert": {
+                        "agent_id": node["parent_id"], "reason": "approval",
+                        "approval_id": ap["_id"], "created_at": idgen.now(),
+                        "consumed": False}},
+                    upsert=True)
+            reassigned += 1
+    return {"moved": actor_id, "subtree_updated": changed,
+            "approvals_reassigned": reassigned}

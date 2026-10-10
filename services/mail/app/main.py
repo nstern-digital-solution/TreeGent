@@ -192,21 +192,29 @@ class DecideIn(BaseModel):
 @router.get("/approvals")
 async def list_approvals(scope: str = "inbox", _c: dict = Depends(caller_actor)):
     """R40-scoped: inbox = pending where I'm approver; requested = mine;
-    scope=all: everything I can see (approver/requester/subtree)."""
-    if scope == "inbox":
+    scope=all: everything I can see (approver/requester/subtree).
+    Issue #20: the ROOT human's view is unscoped — an orphaned approval
+    (deleted requester or approver) matches NO role filter and must
+    surface in every scope so it can be rescued."""
+    actor_id = _c["_id"]  # R45: derived, never claimed
+    p = await principal_for(db, actor_id) if actor_id else None
+    is_root = bool(p and p.get("is_root"))
+    if is_root:
+        q = {"status": "pending"} if scope == "inbox" else {}
+    elif scope == "inbox":
         q = {"approver_id": _c["_id"], "status": "pending"}
     elif scope == "requested":
         q = {"requester_id": _c["_id"]}
     else:
         q = {}
     out = []
-    actor_id = _c["_id"]  # R45: derived, never claimed
-    p = await principal_for(db, actor_id) if actor_id else None
     async for a in approvals.find(q).sort("created_at", 1).limit(200):
-        if p:
-            owners = [x for x in (a["requester_id"], a["approver_id"]) if x == actor_id]
-            if not owners:
-                continue  # own-scope: not my approval in any role
+        if p and not is_root:
+            # own-scope through the rule engine (R40): requester + approver
+            if not await can(
+                    db, p, "approvals.read",
+                    {"owners": [a["requester_id"], a["approver_id"]]}):
+                continue  # not my approval in any role
         out.append({"id": a["_id"], "action": a["action"],
                     "payload": a["payload"], "status": a["status"],
                     "requester_id": a["requester_id"],
