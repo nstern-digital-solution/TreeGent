@@ -57,24 +57,31 @@ async def fetch_received_email(email_id: str) -> dict:
     return await asyncio.to_thread(_fetch_received_email_sync, email_id)
 
 
-def _send_resend_sync(payload: dict) -> dict:
+def _send_resend_sync(payload: dict, idempotency_key: str = "") -> dict:
     """Blocking urllib call — ONLY ever run via asyncio.to_thread (R68)."""
     key = env_fallback("RESEND_API_KEY")
     if not key:
         raise RuntimeError("RESEND_API_KEY not set in environment")
     base = env_fallback("TG_RESEND_API_BASE") or "https://api.resend.com"
     body = json.dumps(payload).encode()
+    headers = {"Authorization": f"Bearer {key}",
+               "Content-Type": "application/json"}
+    if idempotency_key:
+        # issue #13: stable per-mail key — a retry after a post-send crash
+        # is deduplicated provider-side and cannot double-send.
+        headers["Idempotency-Key"] = idempotency_key
     req = urllib.request.Request(
-        f"{base}/emails", data=body, method="POST",
-        headers={"Authorization": f"Bearer {key}",
-                 "Content-Type": "application/json"})
+        f"{base}/emails", data=body, method="POST", headers=headers)
     with urllib.request.urlopen(req, timeout=30) as r:
         out = json.load(r)
     return {"status": "sent", "via": "resend", "provider_id": out.get("id")}
 
 
 async def send_resend(msg: dict) -> dict:
-    """Resend REST: POST /emails. API key from env only."""
+    """Resend REST: POST /emails. API key from env only.
+    Idempotency (issue #13): every attempt for the same mail carries the
+    SAME Idempotency-Key — the mail id — so a retry after a post-send crash
+    is acknowledged by the provider instead of sent a second time."""
     payload = {
         "from": msg["from_addr"],
         "to": msg["to"] if isinstance(msg["to"], list) else [msg["to"]],
@@ -84,14 +91,23 @@ async def send_resend(msg: dict) -> dict:
         payload["text"] = msg["text"]
     if msg.get("html"):
         payload["html"] = msg["html"]
-    return await asyncio.to_thread(_send_resend_sync, payload)
+    return await asyncio.to_thread(_send_resend_sync, payload, msg["_id"])
 
 
 OUTBOUND = {"sink": send_sink, "resend": send_resend}
 
 
 async def dispatch_outbound(msg: dict) -> dict:
-    """Send via the first enabled outbound adapter row."""
+    """Send via the first enabled outbound adapter row. Idempotent per mail
+    (issue #13): a crash-retry after a successful send replays the recorded
+    result instead of sending again."""
+    # issue #13 crash window 2 (crash after the row update, before the
+    # approved write): the send already happened — replay the recorded
+    # result, never re-send. The tighter window (crash after provider-accept
+    # but before this update) is covered by the Idempotency-Key below.
+    if msg.get("status") == "sent":
+        return {"status": "sent", "via": msg.get("via") or "unknown",
+                "provider_id": msg.get("provider_id"), "replay": True}
     row = await db.mail_adapters.find_one(
         {"direction": "outbound", "enabled": True})
     if not row:
@@ -105,6 +121,9 @@ async def dispatch_outbound(msg: dict) -> dict:
         {"_id": msg["_id"]},
         {"$set": {"status": result["status"], "via": result["via"],
                   "provider_id": result.get("provider_id"),
+                  # issue #13: record what idempotency key this send went
+                  # out under — the mail id, stable across every retry
+                  "idempotency_key": msg["_id"],
                   "sent_at": now()}})
     return result
 
