@@ -216,17 +216,7 @@ async def run_with_failover(job: dict) -> tuple[dict, str]:
         except RateLimited as e:
             # R69 fix: Retry-After may be an HTTP-date — int(float()) raised
             # and aborted the whole failover instead of trying the next model
-            raw = str(e) or "60"
-            try:
-                wait = int(float(raw))
-            except ValueError:
-                from email.utils import parsedate_to_datetime
-                try:
-                    from datetime import datetime as _dt, timezone as _tz2
-                    wait = max(1, int((parsedate_to_datetime(raw)
-                                       - _dt.now(_tz2.utc)).total_seconds()))
-                except Exception:  # noqa: BLE001 — unparseable date
-                    wait = 60
+            wait = _retry_after_s(str(e))
             await mark_blocked(f"{prov_name}:{m['_id'].split('/', 1)[1]}",
                                min(wait, 900), "429 rate limited")
         except ProviderError as e:
@@ -234,6 +224,82 @@ async def run_with_failover(job: dict) -> tuple[dict, str]:
             await mark_blocked(f"{prov_name}:{m['_id'].split('/', 1)[1]}",
                                30, str(e))
     reason = f"all candidates failed: {', '.join(tried)}"
+    if first_err:
+        reason += f" — first error: {first_err[:300]}"
+    raise ProviderError(reason)
+
+
+def _retry_after_s(raw: str) -> int:
+    """Retry-After as seconds; HTTP-dates are converted (R69)."""
+    raw = raw or "60"
+    try:
+        return int(float(raw))
+    except ValueError:
+        from email.utils import parsedate_to_datetime
+        try:
+            from datetime import datetime as _dt, timezone as _tz2
+            return max(1, int((parsedate_to_datetime(raw)
+                               - _dt.now(_tz2.utc)).total_seconds()))
+        except Exception:  # noqa: BLE001 — unparseable date
+            return 60
+
+
+# ---------------- embeddings (R76) ----------------
+
+async def call_provider_embeddings(provider_doc: dict, model_id: str,
+                                   inputs: list[str],
+                                   agent_id: str = "") -> dict:
+    """Generic OpenAI-compatible embeddings call. model_id is the catalog
+    id '<provider>/<model>'; the wire takes the model part only."""
+    base = provider_doc["base_url"].rstrip("/")
+    headers = {
+        "Authorization": f"Bearer {provider_key(provider_doc)}",
+        "Content-Type": "application/json",
+    }
+    if "opencode.ai" in base:
+        headers["x-opencode-session"] = f"tg-{agent_id or 'anon'}"
+        headers["x-opencode-client"] = "treegent"
+        headers["User-Agent"] = "treegent/1.0"
+    payload = {"model": model_id.split("/", 1)[1], "input": list(inputs)}
+    try:
+        async with httpx.AsyncClient(timeout=60) as c:
+            r = await c.post(f"{base}/embeddings", headers=headers,
+                             json=payload)
+    except httpx.HTTPError as e:
+        raise ProviderError(f"connection: {e}") from e
+    if r.status_code == 429:
+        raise RateLimited(r.headers.get("retry-after", "60"))
+    if r.status_code != 200:
+        raise ProviderError(f"provider {r.status_code}: {r.text[:200]}")
+    return r.json()
+
+
+async def embed_with_failover(inputs: list[str], cands: list[dict],
+                              agent_id: str = "") -> tuple[dict, str]:
+    """Same failover-rank behavior as run_with_failover: walk the ranked
+    candidates, cooldown-block failures, next model."""
+    tried = []
+    first_err = None
+    for m in cands[:4]:
+        prov_name = m["provider"]
+        provider_doc = (await ready_providers()).get(prov_name)
+        if not provider_doc:
+            continue
+        tried.append(m["_id"])
+        try:
+            resp = await call_provider_embeddings(provider_doc, m["_id"],
+                                                  inputs, agent_id=agent_id)
+            await mark_ok(prov_name)
+            return resp, m["_id"]
+        except RateLimited as e:
+            wait = _retry_after_s(str(e))
+            await mark_blocked(f"{prov_name}:{m['_id'].split('/', 1)[1]}",
+                               min(wait, 900), "429 rate limited")
+        except ProviderError as e:
+            first_err = first_err or str(e)
+            await mark_blocked(f"{prov_name}:{m['_id'].split('/', 1)[1]}",
+                               30, str(e))
+    reason = f"all embedding candidates failed: {', '.join(tried)}"
     if first_err:
         reason += f" — first error: {first_err[:300]}"
     raise ProviderError(reason)
@@ -416,6 +482,17 @@ async def refresh_catalog() -> int:
                     if x in ("text", "image", "audio", "video", "file")]
             if not mods:
                 mods = ["text"]   # gateway gave no modality info — assume text
+            # R76: embedding support is a MODALITY too — the "embedding"
+            # designation's catalog filter requires it (modality filter
+            # pattern). Learn it from the provider's own listing: output
+            # modalities, modality strings, or an embedding-named model id.
+            blob = " ".join(str(x) for x in (
+                arch.get("input_modalities") or [],
+                arch.get("output_modalities") or [],
+                m.get("output_modalities") or [],
+                arch.get("modality") or "", m.get("modality") or "", mid))
+            if "embed" in blob.lower() and "embedding" not in mods:
+                mods.append("embedding")
             await db.model_catalog.update_one(
                 {"_id": f"{name}/{mid}"},
                 {"$set": {"provider": name, "listed": True,

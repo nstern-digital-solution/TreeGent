@@ -69,7 +69,8 @@ async def maybe_compact(agent) -> dict:
     stats = {}
     try:
         stats = await qtree.record_compaction(
-            agent.workspace, dropped, lambda p: _gen(agent, p))
+            agent.workspace, dropped, lambda p: _gen(agent, p),
+            embed_fn=lambda texts: _embed(agent, texts))
     except Exception as e:  # noqa: BLE001 — never fail the turn for memory
         # issue #9: summarize failed — leave agent.messages UNTOUCHED so
         # nothing is dropped unrecoverably; the raw material is persisted
@@ -84,17 +85,26 @@ async def maybe_compact(agent) -> dict:
         agent._regen_system_prompt()
     except Exception as e:  # noqa: BLE001 — never fail the turn for memory
         print(f"[qtree] system-prompt regen failed: {e}")
+    # R76: dreamer trigger check (cheap) after each compaction — the
+    # dreamer itself never raises (it retries on the next compaction)
+    try:
+        from . import dreamer
+        dstats = await dreamer.maybe_dream(agent)
+        if dstats:
+            stats["dream"] = dstats
+    except Exception as e:  # noqa: BLE001 — never fail the turn for memory
+        print(f"[dreamer] trigger check failed: {e}")
     return stats
 
 
-async def _gen(agent, prompt: str) -> str:
+async def _gen(agent, prompt: str, max_tokens: int = 2048) -> str:
     """Single-shot summary generation via the proxy (class "task")."""
     import asyncio
     from . import config
     settings = config.settings
     job = {"class_name": "task", "reason": "compaction",
            "messages": [{"role": "user", "content": prompt}],
-           "tools": [], "max_tokens": 2048}
+           "tools": [], "max_tokens": max_tokens}
     sub = await agent.svcs._call(settings.proxy_url, "/v1/jobs", "POST",
                                  body=job)
     j = {}
@@ -107,6 +117,12 @@ async def _gen(agent, prompt: str) -> str:
     if j.get("status") != "done":
         raise RuntimeError(f"summary job {j.get('error', 'failed')}")
     return j["result"]["choices"][0]["message"]["content"]
+
+
+async def _embed(agent, texts: list[str]) -> list[list[float]]:
+    """One embedding call via the proxy (designation "embedding", R76)."""
+    from . import conclusions
+    return await conclusions.embed_texts(agent.svcs, texts)
 
 
 # ---- 2. context block in the system prompt ---------------------------------
