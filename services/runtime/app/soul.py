@@ -118,8 +118,8 @@ def soul_block(workspace: str) -> str:
             mem = "…[older notes cut — read MEMORY.md for full history]\n" \
                   + mem[-MEMORY_TAIL:]
         parts.append(f"<memory>\n{mem}\n</memory>")
-    # R70: fractal quadtree episodic memory — newest entry of EVERY level
-    # rides in the system prompt (fine recent + coarse ancient at once)
+    # R70/R75: fractal quadtree episodic memory — every UNROLLED entry of
+    # EVERY level rides in the system prompt (gapless lifetime coverage)
     try:
         from . import compact as _compact
         qt = _compact.qtree_soul_extension(workspace)

@@ -8,8 +8,9 @@ Compaction points:
      live context and compaction retries next turn; the material is also
      persisted verbatim to memory/qtree/raw/ first. Nothing silently
      disappears anymore.
-  2. CONTEXT BLOCK — soul_block() appends the qtree view (newest entry of
-     every level), so every generation carries all coarseness levels.
+  2. CONTEXT BLOCK — soul_block() appends the qtree view (every unrolled
+     entry of every level — R75 lifetime coverage), so every generation
+     carries gapless coverage of the whole compacted life.
   3. RESTORE — _sanitize tail-caps at 500 messages; the qtree
      context block covers whatever fell outside that window long-term.
 
