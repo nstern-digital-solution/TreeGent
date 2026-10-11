@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Meteor } from 'meteor/meteor';
 import { useTracker } from 'meteor/react-meteor-data';
 import { Actors, Conversations, Messages } from '../collections.js';
+import { Markdown } from './Markdown.jsx';
 
 export function ChatPane({ me }) {
   const [activeId, setActiveId] = useState(null);
@@ -80,7 +81,7 @@ function MessageList({ conv, me, actorsById }) {
           return (
             <div key={m._id} className={`msg ${a.kind || ''}`}>
               <span className="who">{a.display_name || m.sender_username || 'unknown'}</span>
-              <span className="text">{m.body}</span>
+              <span className="text"><Markdown text={m.body} /></span>
             </div>
           );
         })}
