@@ -1,5 +1,5 @@
 """R70 unit tests: quadtree mechanics without a live provider (fake gen_fn)."""
-import asyncio, json, os, sys, tempfile
+import asyncio, json, os, re, sys, tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 ".."))
@@ -67,6 +67,10 @@ def test_entry_cap():
 
 
 def test_context_block():
+    """R75: the block carries EVERY unrolled entry of every level — the
+    unrolled sets across levels partition the whole compacted life
+    (gapless). 16 compactions at one era roll up completely: L0 fully
+    rolled, L1 fully rolled, only L2's single unrolled entry rides."""
     gen = fake_gen_factory([])
     ws = tempfile.mkdtemp(prefix="qtree3")
     for era in range(4):
@@ -74,16 +78,44 @@ def test_context_block():
             dropped = [{"role": "user",
                         "content": f"era {era} msg {i} — decision D{era}{i}"}]
             asyncio.run(qtree.record_compaction(ws, dropped, gen))
+    meta = qtree.load_meta(ws)
+    assert meta["0"] == {"entries": 16, "rolled": 16}, meta
+    assert meta["1"] == {"entries": 4, "rolled": 4}, meta
+    assert meta["2"] == {"entries": 1, "rolled": 0}, meta
     block = qtree.context_block(ws)
     assert "<episodic" not in block  # raw view; wrapper added by soul
-    assert "[recent]" in block or "era" in block
+    l0 = qtree.read_entries(ws, 0)
+    l1 = qtree.read_entries(ws, 1)
+    l2 = qtree.read_entries(ws, 2)
+    l2_body = re.sub(r"^- \[[^\]]+\] ", "", l2[0])
     lines = block.strip().splitlines()
-    assert len(lines) >= 1
-    print("PASS context block: %d level lines, %d chars" % (len(lines), len(block)))
-    # budget trimming drops OLDEST (front) lines first
-    small = qtree.context_block(ws, budget=300)
-    assert len(small) <= 300 + 200  # one line may exceed tiny budget alone
-    print("PASS budget trim: %d chars" % len(small))
+    # EXACTLY the unrolled sets: no L0 line, no L1 line, one L2 line
+    assert lines == [f"[~16 compactions ago] {l2_body}"], lines
+    for entries, level in ((l0, 0), (l1, 1)):
+        for e in entries:
+            body = re.sub(r"^- \[[^\]]+\] ", "", e)
+            tag = "recent" if level == 0 else f"~{4 ** level} compactions ago"
+            assert f"[{tag}] {body}" not in lines, \
+                f"rolled L{level} entry must not ride"
+    print("PASS context block (16 compactions): 1 L2 line, no L0/L1 lines")
+
+    # unrolled remainder: 6 L0 entries (rolled=4) + 1 L1 ->
+    # block = L0[4], L0[5], L1[0] and nothing else
+    ws2 = tempfile.mkdtemp(prefix="qtree3b")
+    for i in range(6):
+        dropped = [{"role": "user", "content": f"batch {i} — decision E{i}"}]
+        asyncio.run(qtree.record_compaction(ws2, dropped, gen))
+    meta = qtree.load_meta(ws2)
+    assert meta["0"] == {"entries": 6, "rolled": 4}, meta
+    assert meta["1"] == {"entries": 1, "rolled": 0}, meta
+    l0 = qtree.read_entries(ws2, 0)
+    l1 = qtree.read_entries(ws2, 1)
+    strip = lambda e: re.sub(r"^- \[[^\]]+\] ", "", e)  # noqa: E731
+    expected = [f"[recent] {strip(l0[4])}",
+                f"[recent] {strip(l0[5])}",
+                f"[~4 compactions ago] {strip(l1[0])}"]
+    assert qtree.context_block(ws2).strip().splitlines() == expected
+    print("PASS context block (remainder): L0[4], L0[5], L1[0] — exact")
 
 
 def test_needs_compaction():
@@ -203,24 +235,72 @@ def test_issue4_episodic_strip_idempotent():
 
 
 def test_issue5_budget_trim_keeps_L0():
-    """Issue #5: under budget pressure the trim must drop the COARSEST
-    level first and keep the recent L0 entry (it used to drop L0 and keep
-    ancient digests — exactly backwards)."""
+    """Issue #5 + R75: only UNROLLED entries ride (a fully rolled level
+    contributes 0 lines); under budget pressure the trim still drops the
+    COARSEST material first — a level's OLDEST unrolled entries before its
+    newest — and the recent L0 entry is the last thing to go."""
     ws = tempfile.mkdtemp(prefix="qtree_i5")
+    # 5 levels, one entry each, all rolled except L4 -> only L4 is unrolled
     for lvl in range(5):
         qtree._append_entry(ws, lvl, f"- [ts] LEVEL-{lvl} digest")
     meta = {str(lvl): {"entries": 1, "rolled": 1 if lvl < 4 else 0}
             for lvl in range(5)}
     qtree._save_meta(ws, meta)
 
-    block = qtree.context_block(ws, budget=90)
-    assert "LEVEL-0" in block, "recent L0 entry must survive the trim"
-    assert "LEVEL-4" not in block, "coarsest digest must be dropped first"
+    # R75: unrolled-only entries ride — the block is EXACTLY the L4 entry
+    full = qtree.context_block(ws)
+    assert full.strip().splitlines() == \
+        ["[~256 compactions ago] LEVEL-4 digest"], full
+    for lvl in range(4):
+        assert f"LEVEL-{lvl} " not in full, \
+            f"fully rolled L{lvl} must not ride (R75: unrolled only)"
+
+    # multi-level state: 3 unrolled L0 + 2 L1 + 1 L2 + 1 L3
+    ws2 = tempfile.mkdtemp(prefix="qtree_i5b")
+    spec = {0: (7, 4), 1: (4, 2), 2: (2, 1), 3: (1, 0)}
+    names = {}
+    for lvl, (n_entries, _rolled) in spec.items():
+        for idx in range(n_entries):
+            name = f"L{lvl}-{idx}-" + "z" * 12      # equal-length bodies
+            qtree._append_entry(ws2, lvl, f"- [ts] {name}")
+            names[(lvl, idx)] = name
+    qtree._save_meta(ws2, {str(l): {"entries": n, "rolled": r}
+                           for l, (n, r) in spec.items()})
+
+    def tag(level):
+        return "recent" if level == 0 else f"~{4 ** level} compactions ago"
+    # display order: fine->coarse, oldest first within a level
+    expected = [f"[{tag(l)}] {names[(l, i)]}"
+                for l in (0, 1, 2, 3)
+                for i in range(spec[l][1], spec[l][0])]
+    # = L0[4], L0[5], L0[6], L1[2], L1[3], L2[1], L3[0]
+    full = qtree.context_block(ws2, budget=10_000)
+    assert full.strip().splitlines() == expected, full
+    assert full.count("[recent]") == 3, \
+        "all 3 unrolled L0 entries must ride (opposite of the old '1 of')"
     # tag math (issue #5 bonus): L2 summarizes 4^2 = 16 L0 compactions
-    full = qtree.context_block(ws, budget=10_000)
     assert "~16 compactions ago" in full and "~4 compactions ago" in full
-    assert "1 of" not in full, "only one entry per level rides in context"
-    print("PASS issue #5: L0 kept, coarse dropped, tags corrected")
+
+    def joined(idxs):
+        return "\n".join(expected[i] for i in idxs)
+    # drop order: L3[0], L2[1], L1[2], L1[3], L0[4], L0[5] -> survivor L0[6]
+    # one drop: the coarsest level's entry goes first
+    b = len(joined([0, 1, 2, 3, 4, 5]))
+    assert qtree.context_block(ws2, budget=b) == joined([0, 1, 2, 3, 4, 5])
+    # two drops: coarsest level fully gone before the next is touched
+    b = len(joined([0, 1, 2, 3, 4]))
+    assert qtree.context_block(ws2, budget=b) == joined([0, 1, 2, 3, 4])
+    # three drops: within a level the OLDEST unrolled entry goes first
+    # (L1[2] dropped, L1[3] kept)
+    b = len(joined([0, 1, 2, 4]))
+    assert qtree.context_block(ws2, budget=b) == joined([0, 1, 2, 4])
+    # five drops: only the two newest L0 entries remain
+    b = len(joined([1, 2]))
+    assert qtree.context_block(ws2, budget=b) == joined([1, 2])
+    # tiny budget: the newest L0 entry is the last thing to go (issue #5)
+    assert qtree.context_block(ws2, budget=1) == expected[2]
+    print("PASS issue #5/R75: unrolled-only rides, trim drops coarsest/oldest"
+          " first, newest L0 survives")
 
 
 def test_issue9_summarize_failure_keeps_context():
@@ -288,3 +368,64 @@ def test_issue9_summarize_failure_keeps_context():
     assert len(a.messages) == len(before), "retry must also keep context"
     print("PASS issue #9: failure keeps context, raw verbatim, "
           "placeholder has head+tail+raw marker")
+
+
+def test_r75_gapless_partition():
+    """R75: 21 compactions (21 = 5*4+1) -> the unrolled tails of all levels
+    PARTITION the whole compacted life — gapless coverage of all 21 eras
+    with one line each: L0[20], L1[4], L2[0]. The 22nd compaction (no
+    rollup) grows the block to 2 L0 lines without touching L1/L2."""
+    log = []
+    gen = fake_gen_factory(log)
+    ws = tempfile.mkdtemp(prefix="qtree_r75")
+    strip = lambda e: re.sub(r"^- \[[^\]]+\] ", "", e)  # noqa: E731
+
+    def drop(i):
+        return [{"role": "user",
+                 "content": f"compaction {i:02d} payload — event E{i:02d} "
+                            + "x" * 120}]
+
+    for i in range(21):
+        asyncio.run(qtree.record_compaction(ws, drop(i), gen))
+    meta = qtree.load_meta(ws)
+    assert meta["0"] == {"entries": 21, "rolled": 20}, meta
+    assert meta["1"] == {"entries": 5, "rolled": 4}, meta
+    assert meta["2"] == {"entries": 1, "rolled": 0}, meta
+
+    block = qtree.context_block(ws)
+    l0 = qtree.read_entries(ws, 0)
+    l1 = qtree.read_entries(ws, 1)
+    l2 = qtree.read_entries(ws, 2)
+    expected = [f"[recent] {strip(l0[20])}",
+                f"[~4 compactions ago] {strip(l1[4])}",
+                f"[~16 compactions ago] {strip(l2[0])}"]
+    lines = block.strip().splitlines()
+    assert lines == expected, lines   # EXACTLY L0[20], L1[4], L2[0]
+    # gapless coverage: the unrolled sets partition all 21 compactions
+    # (each unrolled Ln entry covers 4^n L0 eras: 1 + 4 + 16 = 21)
+    covered = sum((meta[str(l)]["entries"] - meta[str(l)]["rolled"]) * 4 ** l
+                  for l in (0, 1, 2))
+    assert covered == 21, covered
+    # ≤3 lines per level and ≤3*4000 chars per level (fanout-4 construction)
+    per_level = {0: lines[0:1], 1: lines[1:2], 2: lines[2:3]}
+    for lvl, seg in per_level.items():
+        assert len(seg) <= 3, f"L{lvl}: {len(seg)} lines"
+        assert sum(len(x) for x in seg) <= 3 * qtree.COMPACT_ENTRY_MAX
+    print("PASS r75 gapless (21 compactions):")
+    print(block)
+
+    # 22nd compaction: no rollup -> 2 L0 lines, L1/L2 lines unchanged
+    asyncio.run(qtree.record_compaction(ws, drop(21), gen))
+    meta = qtree.load_meta(ws)
+    assert meta["0"] == {"entries": 22, "rolled": 20}, meta
+    assert meta["1"] == {"entries": 5, "rolled": 4}, meta
+    assert meta["2"] == {"entries": 1, "rolled": 0}, meta
+    l0 = qtree.read_entries(ws, 0)
+    lines2 = qtree.context_block(ws).strip().splitlines()
+    assert lines2 == [f"[recent] {strip(l0[20])}",
+                      f"[recent] {strip(l0[21])}",
+                      f"[~4 compactions ago] {strip(l1[4])}",
+                      f"[~16 compactions ago] {strip(l2[0])}"], lines2
+    assert lines2[2:] == lines[1:], "L1/L2 lines must be unchanged"
+    assert sum(len(x) for x in lines2[:2]) <= 3 * qtree.COMPACT_ENTRY_MAX
+    print("PASS r75 gapless (22nd compaction): 2 L0 lines, L1/L2 unchanged")
