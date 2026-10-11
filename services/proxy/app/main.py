@@ -6,6 +6,7 @@ from . import db, dispatcher
 from .admin import router as admin_router
 from .config import env_fallback
 from .dispatcher import refresh_catalog
+from .embeddings import router as embeddings_router
 from .jobs import router as jobs_router
 
 app = FastAPI(title="TreeGent proxy", version="0.1.0")
@@ -46,14 +47,21 @@ async def seed_defaults() -> None:
     """First-run defaults — provider-AGNOSTIC (R31/R33): classes carry
     criteria (price ceiling / caps / context floor), never model names.
     NO provider is baked into the product: providers are rows an admin
-    creates (base_url + key_env) or seeds via TG_PROXY_PROVIDER_BOOTSTRAP_JSON."""
-    if await db.task_classes.count_documents({}) == 0:
-        await db.task_classes.insert_many([
-            {"_id": "agent", "default": True,
-             "description": "models designated for agent-loop usage"},
-            {"_id": "task", "default": False,
-             "description": "models for short auxiliary tasks"},
-        ])
+    creates (base_url + key_env) or seeds via TG_PROXY_PROVIDER_BOOTSTRAP_JSON.
+    R76: the "embedding" designation joins the seed list — $setOnInsert
+    upserts so EXISTING deploys gain missing classes too (never clobbering
+    admin-edited rows) and a fresh deploy boots with everything working
+    degraded until models are designated."""
+    for c in (
+        {"_id": "agent", "default": True,
+         "description": "models designated for agent-loop usage"},
+        {"_id": "task", "default": False,
+         "description": "models for short auxiliary tasks"},
+        {"_id": "embedding", "default": False,
+         "description": "models for embedding vectors (R76 memory search)"},
+    ):
+        await db.task_classes.update_one({"_id": c["_id"]},
+                                         {"$setOnInsert": c}, upsert=True)
     # generic provider bootstrap (any deployment, via env; JSON array of
     # {_id, kind, base_url, key_env} rows) — providers are DATA, never code
     import json
@@ -89,4 +97,5 @@ async def health():
 
 
 app.include_router(jobs_router)
+app.include_router(embeddings_router)
 app.include_router(admin_router)

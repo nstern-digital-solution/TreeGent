@@ -435,8 +435,36 @@ async def t_web_search(ctx: ToolContext, args: dict) -> str:
 
 
 async def t_memory_search(ctx: ToolContext, args: dict) -> str:
+    """R76: vector-rank the derived conclusions (top-k, premises shown)
+    plus the labeled notes-grep over MEMORY.md/notes. NEVER errors — an
+    unavailable embedding path degrades to notes-only with a one-line note."""
+    from . import conclusions as C
     from . import soul as SOUL
-    return SOUL.memory_search(ctx.workspace, args["q"])
+    q = args.get("q") or ""
+    try:
+        k = int(args.get("k", 5))
+    except (TypeError, ValueError):
+        k = 5
+    k = max(1, min(k, 20))
+    parts: list[str] = []
+    try:
+        qvec = (await C.embed_texts(ctx.svcs, [q], timeout=10.0))[0]
+        hits = C.search_conclusions(ctx.workspace, qvec, k)
+        if hits:
+            parts.extend(C.format_conclusion(h) for h in hits)
+        else:
+            parts.append("(no matching conclusions)")
+    except Exception:  # noqa: BLE001 — degraded, never an error
+        parts.append("(vector memory unavailable)")
+    try:
+        notes = SOUL.memory_search(ctx.workspace, q)
+    except re.error as e:
+        notes = f"ERROR: bad search regex: {e}"
+    except Exception as e:  # noqa: BLE001 — the tool never errors
+        notes = f"(notes grep unavailable: {e})"
+    parts.append("(source: notes)")
+    parts.append(notes)
+    return "\n".join(parts)
 
 
 async def t_memory_write(ctx: ToolContext, args: dict) -> str:
@@ -766,9 +794,11 @@ TOOL_SCHEMAS = [
             "path": {"type": "string", "description": "workspace path for action=screenshot (PNG)"},
             "required": ["action"]}}},
     {
-        "name": "memory.search", "description": "search MEMORY.md and notes/*.md for a word or regex — your long-term memory in files",
+        "name": "memory.search", "description": "search your long-term memory: derived conclusions ranked by meaning (vector top-k, with their premises) plus a regex grep over MEMORY.md and notes/*.md (labeled 'source: notes')",
         "parameters": {"type": "object", "properties": {
-            "q": {"type": "string"}, "required": ["q"]}}},
+            "q": {"type": "string", "description": "word, phrase or regex"},
+            "k": {"type": "integer", "description": "max conclusions to return (default 5, max 20)"},
+            "required": ["q"]}}},
     {
         "name": "memory.write", "description": "append a durable note to MEMORY.md (timestamped, tail rides in your context every turn). For facts worth keeping: preferences, decisions, how-tos — not transient state.",
         "parameters": {"type": "object", "properties": {

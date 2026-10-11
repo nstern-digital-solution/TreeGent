@@ -38,6 +38,8 @@ import re
 import sys
 from datetime import datetime, timezone
 
+from .conclusions import CONCLUSION_TEXT_MAX
+
 COMPACT_ENTRY_MAX = 4000      # Felix: max chars per summary entry
 COMPACT_FANOUT = 4            # Felix: 4 entries on a level -> 1 above
 # Felix 2026-10-08: modern models carry ~1M-token windows — compact at
@@ -56,8 +58,75 @@ open questions, state changes
 - max {limit} characters — the LAST details matter most when space runs out
 - write in English
 
+After the summary, output a line exactly `===CONCLUSIONS===`, then up to 12 \
+derived conclusions, one per line exactly:
+CONCLUSION: <text> || KIND: peer:<username>|task|state || FROM: <short premise refs>
+(KIND is peer:<username> for conclusions about a person/peer, task for \
+task/project knowledge, state for system/world state; FROM references the \
+material by index or a short quote fragment. Each conclusion max 400 \
+characters. Omit the whole `===CONCLUSIONS===` section when nothing is \
+worth deriving.)
+
 Material:
 {material}"""
+
+_CONCL_MARKER = "===CONCLUSIONS==="
+MAX_CONCLUSIONS_PER_PASS = 12
+_MAX_PREMISE_LEN = 120
+_MAX_PREMISES = 8
+_KIND_RE = re.compile(r"^(task|state|peer:[\w.\-]{1,64})$")
+
+
+def parse_generation(out: str) -> tuple[str, list[dict]]:
+    """Split a compaction generation into (summary, conclusions) — R76
+    two-output format. Old-format outputs (no `===CONCLUSIONS===` line)
+    are fully valid: the whole text is the summary and nothing is derived
+    (back-compat). Conclusions are capped (12 per pass, text <= 400 chars)
+    and kinds validated (anything unrecognized becomes "task")."""
+    lines = (out or "").splitlines()
+    idx = next((i for i, l in enumerate(lines)
+                if l.strip() == _CONCL_MARKER), None)
+    if idx is None:
+        return (out or "").strip(), []
+    summary = "\n".join(lines[:idx]).strip()
+    if not summary:
+        # marker-only output: keep everything as the summary (never lose
+        # material to a formatting quirk)
+        return (out or "").strip(), []
+    conclusions: list[dict] = []
+    for line in lines[idx + 1:]:
+        if not line.strip().startswith("CONCLUSION:"):
+            continue
+        c = _parse_conclusion_line(line)
+        if c:
+            conclusions.append(c)
+        if len(conclusions) >= MAX_CONCLUSIONS_PER_PASS:
+            break
+    return summary, conclusions
+
+
+def _parse_conclusion_line(line: str) -> dict | None:
+    text, kind, refs = "", "task", ""
+    for seg in line.split("||"):
+        seg = seg.strip()
+        if seg.startswith("CONCLUSION:"):
+            text = seg[len("CONCLUSION:"):].strip()
+        elif seg.startswith("KIND:"):
+            k = seg[len("KIND:"):].strip()
+            kind = k if _KIND_RE.match(k) else "task"
+        elif seg.startswith("FROM:"):
+            refs = seg[len("FROM:"):].strip()
+    if not text:
+        return None
+    premises = []
+    for ref in re.split(r"[,;]", refs):
+        ref = ref.strip()[:_MAX_PREMISE_LEN]
+        if ref and ref not in premises:
+            premises.append(ref)
+        if len(premises) >= _MAX_PREMISES:
+            break
+    return {"text": text[:CONCLUSION_TEXT_MAX], "kind": kind,
+            "premises": premises}
 
 
 def _now() -> datetime:
@@ -177,8 +246,46 @@ async def _summarize(material: str, limit: int, gen_fn) -> str:
     return out
 
 
+async def _store_conclusions(workspace: str, parsed: list[dict], era: str,
+                             raw_ref: str, embed_fn) -> dict:
+    """R76: persist the derived conclusions (append-only JSONL) with
+    embeddings when the embed fn works — WITHOUT the embedding field when
+    it raises (degraded, counted). Never raises: the conclusions side is
+    best-effort and must never fail a compaction."""
+    from . import conclusions as _store
+    if not parsed:
+        return {"conclusions": 0, "conclusions_unembedded": 0}
+    raw_premise = ("raw/" + os.path.basename(raw_ref)) if raw_ref else None
+    texts = [c["text"] for c in parsed]
+    ts = datetime.now(timezone.utc).isoformat()   # one moment per pass
+    vecs = None
+    if embed_fn is not None:
+        try:
+            vecs = await embed_fn(texts)
+            if len(vecs) != len(texts):
+                raise RuntimeError(
+                    f"embedding count mismatch ({len(vecs)} != {len(texts)})")
+        except Exception as e:  # noqa: BLE001 — degraded, never broken
+            print(f"[qtree] conclusion embedding failed ({e}); "
+                  f"storing {len(texts)} unembedded", file=sys.stderr)
+            vecs = None
+    recs = []
+    for c, v in zip(parsed, vecs if vecs is not None
+                    else [None] * len(parsed)):
+        premises = list(c["premises"])
+        if raw_premise and raw_premise not in premises:
+            premises.append(raw_premise)   # ground-truth source pointer
+        recs.append(_store.make_record(
+            text=c["text"], kind=c["kind"], era=era, premises=premises,
+            ts=ts, embedding=v))
+    _store.append_records(workspace, recs)
+    return {"conclusions": len(recs),
+            "conclusions_unembedded":
+                0 if vecs is not None else len(recs)}
+
+
 async def record_compaction(workspace: str, dropped: list[dict],
-                            gen_fn) -> dict:
+                            gen_fn, embed_fn=None) -> dict:
     """Called after a turn when `dropped` messages left the context.
     Summarizes them into a fresh L0 entry, then rolls up while a level
     holds 4 UNROLLED entries (children are kept on disk — the quadtree
@@ -189,7 +296,12 @@ async def record_compaction(workspace: str, dropped: list[dict],
     pointing at that raw file is written and the error RE-RAISED — the
     caller (maybe_compact) then leaves the live context untouched and
     the next turn retries compaction. A provider blip must never
-    destroy material."""
+    destroy material.
+
+    R76: the SAME generation pass also derives conclusions (two-output
+    prompt) which land in memory/conclusions.jsonl — embedded via the
+    proxy when `embed_fn` works, stored without vectors when it does not.
+    The conclusions side is wrapped so it can NEVER fail the compaction."""
     if not dropped:
         return {"entries": 0}
     material = "\n".join(
@@ -199,7 +311,7 @@ async def record_compaction(workspace: str, dropped: list[dict],
     raw_ref = _save_raw(workspace, material)
     meta = load_meta(workspace)
     try:
-        summary = await _summarize(material, COMPACT_ENTRY_MAX, gen_fn)
+        out = await _summarize(material, COMPACT_ENTRY_MAX, gen_fn)
     except Exception as e:  # noqa: BLE001 — memory must never break the loop
         print(f"[qtree] summarize failed ({e}); raw kept in {raw_ref}",
               file=sys.stderr)
@@ -208,10 +320,19 @@ async def record_compaction(workspace: str, dropped: list[dict],
         _lvl(meta, 0)["entries"] += 1
         _save_meta(workspace, meta)
         raise     # issue #9: caller must NOT drop the messages
+    summary, parsed = parse_generation(out)
     line = line_for(summary, stamp)
     _append_entry(workspace, 0, line)
 
     _lvl(meta, 0)["entries"] += 1
+    try:
+        concl_stats = await _store_conclusions(
+            workspace, parsed, f"L0:{_lvl(meta, 0)['entries']}", raw_ref,
+            embed_fn)
+    except Exception as e:  # noqa: BLE001 — conclusions never fail compaction
+        print(f"[qtree] conclusions side failed ({e}); summary kept",
+              file=sys.stderr)
+        concl_stats = {"conclusions": 0, "conclusions_unembedded": 0}
     rolled = 0
     level = 0
     while _unrolled(workspace, meta, level) >= COMPACT_FANOUT:
@@ -221,7 +342,11 @@ async def record_compaction(workspace: str, dropped: list[dict],
         up = "\n".join(four)
         up_ref = _save_raw(workspace, up, suffix=f"-roll-L{level}")
         try:
-            summary = await _summarize(up, COMPACT_ENTRY_MAX, gen_fn)
+            up_out = await _summarize(up, COMPACT_ENTRY_MAX, gen_fn)
+            # rollups summarize ALREADY-derived entries: strip any
+            # conclusions section from the entry (derivation happens once,
+            # on the compaction pass)
+            summary, _ = parse_generation(up_out)
         except Exception as e:  # noqa: BLE001 — the L0 entry is already
             # written (partially succeeded): the rollup entry must still
             # exist, so keep head+tail with the raw pointer (issue #9)
@@ -235,7 +360,7 @@ async def record_compaction(workspace: str, dropped: list[dict],
         rolled += 1
         level += 1
     _save_meta(workspace, meta)
-    return {"entries": 1, "rolled": rolled}
+    return {"entries": 1, "rolled": rolled, **concl_stats}
 
 
 def line_for(summary: str, stamp: str) -> str:
