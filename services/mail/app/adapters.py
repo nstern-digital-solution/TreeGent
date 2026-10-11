@@ -30,6 +30,13 @@ def parse_ts(value) -> datetime:
         return now()
 
 
+# Cloudflare sits in front of api.resend.com and blanket-bans the default
+# Python User-Agent with 403 "error code: 1010" (browser-signature rule) —
+# the ban fires BEFORE auth, so no key change can ever fix it. Every request
+# must identify itself as a named client (verified: named UA -> Resend auth
+# layer; default python UA -> Cloudflare 1010).
+_UA = "TreeGent/1.0 (resend adapter)"
+
 # ---------------- outbound ----------------
 
 async def send_sink(msg: dict) -> dict:
@@ -45,7 +52,7 @@ def _fetch_received_email_sync(email_id: str) -> dict:
     base = env_fallback("TG_RESEND_API_BASE") or "https://api.resend.com"
     req = urllib.request.Request(
         f"{base}/emails/receiving/{email_id}",
-        headers={"Authorization": f"Bearer {key}"})
+        headers={"Authorization": f"Bearer {key}", "User-Agent": _UA})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read().decode())
 
@@ -65,7 +72,8 @@ def _send_resend_sync(payload: dict, idempotency_key: str = "") -> dict:
     base = env_fallback("TG_RESEND_API_BASE") or "https://api.resend.com"
     body = json.dumps(payload).encode()
     headers = {"Authorization": f"Bearer {key}",
-               "Content-Type": "application/json"}
+               "Content-Type": "application/json",
+               "User-Agent": _UA}
     if idempotency_key:
         # issue #13: stable per-mail key — a retry after a post-send crash
         # is deduplicated provider-side and cannot double-send.
@@ -140,7 +148,8 @@ def list_received_emails(limit: int = 100, after: str = "") -> dict:
     url = f"{base}/emails/receiving?limit={limit}"
     if after:
         url += f"&after={after}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
+    req = urllib.request.Request(url,
+        headers={"Authorization": f"Bearer {key}", "User-Agent": _UA})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read().decode())
 
