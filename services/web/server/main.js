@@ -119,6 +119,12 @@ const FILES_ROUTES = [
   ['GET', /^\/files\/[^/?]+\/url$/],
   ['PUT', /^\/files\/[^/?]+\/share$/],
   ['DELETE', /^\/files\/[^/?]+$/],
+  // issue #51: the hierarchical file system — folders + prefix shares
+  ['POST', /^\/folders$/],
+  ['DELETE', /^\/folders\/.+$/],
+  ['GET', /^\/shares$/],
+  ['POST', /^\/shares$/],
+  ['DELETE', /^\/shares\/[^/?]+$/],
 ];
 
 // R62/R68: ONE impersonation policy for every central-tier forwarder. The
@@ -453,8 +459,20 @@ Meteor.publish('filesMeta', async function () {
   const user = await Meteor.users.findOneAsync(this.userId);
   const me = await myActor(user);
   if (!me) return this.ready();
-  return Files.find(
-    { $or: [{ owner: me._id }, { shared_with: me._id }] });
+  // R40 own-scope: own + shared-with-me. Issue #51: superiors ALSO receive
+  // their whole subtree's file metadata (like secretsMeta) so the
+  // reach-down picker lists subordinates' files — the service API still
+  // enforces per-request auth.
+  const selector = { $or: [{ owner: me._id }, { shared_with: me._id }] };
+  const actorsRaw = await Actors.rawCollection().find(
+    {}, { projection: { _id: 1, org: 1, kind: 1 } }).toArray();
+  const subtree = actorsRaw
+    .filter((a) => (a.org && a.org.ancestors || []).includes(me._id))
+    .map((a) => a._id);
+  if (subtree.length) {
+    selector.$or.push({ owner: { $in: subtree } });
+  }
+  return Files.find(selector);
 });
 
 Meteor.publish('agentTurns', async function (agentId, limit) {
@@ -770,11 +788,14 @@ Meteor.methods({
       // R68 drive-by: X-Actor-Id was missing here, so the central tier was
       // anonymous and every upload died with
       // 400 "X-Actor-Id required for central tier".
-      const { name, type, b64 } = body;
+      // Issue #51: optional `path` lands the upload in that folder.
+      const { name, type, b64, path: destFolder } = body;
       const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
       const fd = new FormData();
       fd.append('file', new Blob([bytes], { type: type || 'application/octet-stream' }), name);
-      const res = await fetch(`${FILES_URL}/files${url.includes('?') ? '&' : '?'}caller_id=${encodeURIComponent(actor)}`, {
+      const upQ = [`caller_id=${encodeURIComponent(actor)}`];
+      if (destFolder) upQ.push(`path=${encodeURIComponent(destFolder)}`);
+      const res = await fetch(`${FILES_URL}/files?${upQ.join('&')}`, {
         method: 'POST',
         headers: { 'X-Service-Token': SERVICE_TOKEN, 'X-Actor-Id': actor },
         body: fd,
