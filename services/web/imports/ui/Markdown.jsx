@@ -24,26 +24,30 @@ function Inline({ nodes }) {
   });
 }
 
-function Block({ b, key }) {
+function Block({ b, pk }) {
   switch (b.tag) {
     case 'hr':
-      return <hr key={key} />;
+      return <hr key={pk} />;
     case 'pre':
-      return <pre key={key} className="md-pre"><code>{(b.children[0].children || []).join('')}</code></pre>;
+      return <pre key={pk} className="md-pre"><code>{(b.children[0].children || []).join('')}</code></pre>;
     case 'blockquote':
-      return <blockquote key={key} className="md-quote">{b.children.map((c, i) => <Block b={c} key={i} />)}</blockquote>;
+      return <blockquote key={pk} className="md-quote">{b.children.map((c, i) => <Block b={c} pk={i} key={i} />)}</blockquote>;
     case 'ul':
-      return <ul key={key} className="md-ul">{b.children.map((li, i) => <li key={i}><Inline nodes={li.children} /></li>)}</ul>;
+      return <ul key={pk} className="md-ul">{b.children.map((li, i) => <li key={i}><Inline nodes={li.children} /></li>)}</ul>;
     case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6': {
       const Tag = b.tag;
-      return <Tag key={key} className="md-h"><Inline nodes={b.children} /></Tag>;
+      return <Tag key={pk} className="md-h"><Inline nodes={b.children} /></Tag>;
     }
     default:
-      return <p key={key} className="md-p"><Inline nodes={b.children} /></p>;
+      return <p key={pk} className="md-p"><Inline nodes={b.children} /></p>;
   }
 }
 
-export function Markdown({ text }) {
+function MarkdownBase({ text }) {
   const blocks = parseBlocks(text == null ? '' : String(text));
-  return <>{blocks.map((b, i) => <Block b={b} key={i} />)}</>;
+  return <>{blocks.map((b, i) => <Block b={b} pk={i} key={i} />)}</>;
 }
+
+// memo: chat lists re-render on every new message; identical text never
+// re-parses (review nit: parse cost is O(message), memo is cheap insurance).
+export const Markdown = React.memo(MarkdownBase);

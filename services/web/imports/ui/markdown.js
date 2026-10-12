@@ -99,6 +99,21 @@ export function inlineNodes(text) {
   return out;
 }
 
+// The exact predicates the block starters below use. Paragraphs stop ONLY on
+// lines a starter will actually consume. (Issue #46 review: the old prefix
+// stop-regex accepted '---foo'/'***bold***' lines that NO starter consumes —
+// the hr starter requires a full-line '---' — so the paragraph branch ran
+// empty, i never advanced, and parseBlocks spun forever: a remote tab-freeze
+// via any chat message. Keep this list identical to the starters, and the
+// failsafe in the paragraph branch guarantees progress even if they drift.)
+const startsBlock = (line) =>
+  line.trim() === ''
+  || /^\s*```/.test(line)
+  || /^\s*(---|___|\*\*\*)\s*$/.test(line)   // hr: FULL line only, same as starter
+  || /^#{1,6}\s+/.test(line)                    // heading: same as starter
+  || /^\s*>/.test(line)                         // quote: same as starter
+  || /^\s*[-*+]\s+/.test(line);                 // list: same as starter
+
 export function parseBlocks(src) {
   // Block pass: fenced code, headings, rules, bullets, quotes, paragraphs.
   const lines = String(src).replace(/\r\n/g, '\n').split('\n');
@@ -111,6 +126,13 @@ export function parseBlocks(src) {
 
     // fenced code: ``` ... ``` (unclosed fence runs to end of message)
     if (/^\s*```/.test(line)) {
+      // single-line form ```code``` keeps its content (review nit: it used to
+      // render as an empty pre — same-line close detected BEFORE the scan)
+      const one = /^\s*```\s*(.+?)\s*```\s*$/.exec(line);
+      if (one) {
+        blocks.push({ tag: 'pre', children: [{ tag: 'code', children: [one[1]] }] });
+        i += 1; continue;
+      }
       const body = [];
       i += 1;
       while (i < lines.length && !/^\s*```/.test(lines[i])) { body.push(lines[i]); i += 1; }
@@ -152,8 +174,11 @@ export function parseBlocks(src) {
     // paragraph: each source '\n' becomes a hard <br> node so line breaks
     // survive React rendering without CSS white-space hacks.
     const para = [];
-    while (i < lines.length && lines[i].trim() !== ''
-           && !/^\s*(```|>|[-*+]\s|#{1,6}\s|---|___|\*\*\*)/.test(lines[i])) {
+    while (i < lines.length && !startsBlock(lines[i])) { para.push(lines[i]); i += 1; }
+    if (para.length === 0 && i < lines.length) {
+      // fail-safe: line matched startsBlock yet no starter above consumed it
+      // (predicate drift). Emit it as literal text so i ALWAYS advances.
+      // Intended unreachable; defense against this issue's exact bug class.
       para.push(lines[i]); i += 1;
     }
     const kids = [];

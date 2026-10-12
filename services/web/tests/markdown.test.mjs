@@ -77,3 +77,33 @@ test('CRLF normalized', () => {
   const p = parseBlocks('a\r\nb');
   assert.ok(JSON.stringify(p).includes('"br"'));
 });
+
+test('issue #46 review boundary: stop-regex shapes that no starter consumes must not hang', () => {
+  // Heike's HIGH: prefix-based stop-regex wedged the loop on these (exit 124
+  // under timeout). Aligned predicates + guaranteed-advance failsafe fix them.
+  // If this ever hangs again, node's default test timeout catches it too.
+  for (const src of ['***bold***', '--- foo', '-----', '___x___', '*** foo',
+                     '---\n***\n___', 'text\n--- foo\ntail']) {
+    const blocks = parseBlocks(src);           // must RETURN
+    assert.ok(blocks.length >= 1, `no blocks for ${src}`);
+    // text content must survive any degradation (markup chars may be consumed)
+    const leaves = [];
+    (function walk(ns){ for (const n of ns) { if (typeof n === 'string') { leaves.push(n); continue; } walk(n.children || []); } })(blocks);
+    const plain = (v) => v.replace(/[^a-z ]/gi, '').trim();
+    const want = plain(src);
+    if (want) assert.ok(plain(leaves.join('')).includes(want), `${src}: content lost`);
+  }
+});
+test('hr still consumes full-line only; mixed separators degrade as text', () => {
+  assert.equal(parseBlocks('---')[0].tag, 'hr');
+  assert.equal(parseBlocks('***')[0].tag, 'hr');
+  assert.equal(parseBlocks('--- x')[0].tag, 'p');
+});
+
+test("one-line fence keeps content (review nit)", () => {
+  const b = parseBlocks("``x`` and ```code```");
+  assert.ok(JSON.stringify(b).includes("code"));
+});
+test("unclosed single-backtick stays text", () => {
+  assert.ok(typeof parseBlocks("a `b")[0].children.includes("a `b"));
+});

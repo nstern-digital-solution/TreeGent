@@ -81,7 +81,7 @@ function MessageList({ conv, me, actorsById }) {
           return (
             <div key={m._id} className={`msg ${a.kind || ''}`}>
               <span className="who">{a.display_name || m.sender_username || 'unknown'}</span>
-              <span className="text"><Markdown text={m.body} /></span>
+              <div className="text"><Markdown text={m.body} /></div>
             </div>
           );
         })}
