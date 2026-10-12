@@ -14,6 +14,8 @@ async def _startup() -> None:
     m = await migrate_paths(db)     # idempotent, every boot (issue #51 B)
     if m.get("migrated"):
         print(f"[files] path migration: {m['migrated']} legacy file(s)")
+    if m.get("deduped"):
+        print(f"[files] path migration: dropped {m['deduped']} duplicate legacy file(s)")
     try:
         await storage.ensure_bucket()
     except Exception as e:  # noqa: BLE001

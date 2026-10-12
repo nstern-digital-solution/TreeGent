@@ -39,11 +39,21 @@ async def migrate_paths(db) -> dict:
     await files_col.update_many({"kind": {"$exists": False}},
                                 {"$set": {"kind": "file"}})
     migrated = 0
-    async for f in files_col.find({"path": {"$exists": False}}):
+    deduped = 0
+    # oldest first, so same-name legacy siblings keep the earliest upload
+    async for f in files_col.find({"path": {"$exists": False}}
+                                  ).sort("created_at", 1):
         a = await actors.find_one({"_id": f.get("owner")}, {"username": 1})
         username = (a or {}).get("username") or f.get("owner") or "unknown"
         name = f.get("name") or f["_id"]
         path = f"/home/{username}/{name}"
+        # review finding on #52: same-name legacy siblings collided on one
+        # target path — keep the first (oldest) and drop later duplicates;
+        # their blobs stay in S3 unreferenced, as before this dedupe existed
+        if await files_col.find_one({"path": path}):
+            await files_col.delete_one({"_id": f["_id"]})
+            deduped += 1
+            continue
         await files_col.update_one({"_id": f["_id"]},
                                    {"$set": {"path": path, "kind": "file"}})
         for d in ancestors(path):
@@ -54,4 +64,4 @@ async def migrate_paths(db) -> dict:
         if a.get("username"):
             await ensure_folder(folders_col, f"/home/{a['username']}",
                                 a["_id"])
-    return {"migrated": migrated}
+    return {"migrated": migrated, "deduped": deduped}

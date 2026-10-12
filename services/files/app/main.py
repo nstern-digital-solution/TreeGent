@@ -198,6 +198,10 @@ async def upload(file: UploadFile, CLAIM_CALLER: str = "",
         (folder.rstrip("/") if folder != paths.ROOT else "") + "/" + name)
     if full is None:
         raise HTTPException(400, "bad path")
+    # review finding on #52: one file per path (the unique sparse index
+    # enforces it; a friendly 409 beats a raw driver error)
+    if await files_col.find_one({"path": full}):
+        raise HTTPException(409, "a file with this name already exists here")
     members = [s for s in shared_with.split(",") if s]
     if members:
         await _validate_actors(members)

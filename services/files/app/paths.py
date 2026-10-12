@@ -3,6 +3,8 @@
 One normalization rule, used everywhere a path enters the system:
 
 - absolute only ("/…"), trailing "/" stripped, "//" collapsed
+- "." segments collapse away (canonicalized like "//" — review finding on #52:
+  "/home/a/./x" and "/home/a/x" must be the same path, not two)
 - ".." segments rejected (no traversal)
 - depth <= 16 segments, total length <= 512
 - per segment: [A-Za-z0-9._- ] + at least one char (no empty segments)
@@ -33,6 +35,8 @@ def normalize_path(p) -> str | None:
     for seg in p.split("/")[1:]:
         if seg == "":
             continue                      # collapse //
+        if seg == ".":
+            continue                      # canonicalize away (review finding)
         if seg == ".." or not SEGMENT_RE.fullmatch(seg):
             return None                   # traversal + charset violations
         segs.append(seg)

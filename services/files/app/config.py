@@ -59,7 +59,16 @@ shares_col = db.file_shares   # {_id: fsh_*, path_prefix, with: [actor_id],
 async def ensure_indexes() -> None:
     await files_col.create_index([("owner", 1), ("updated_at", -1)])
     await files_col.create_index("shared_with")
-    await files_col.create_index("path")
+    # review finding on #52: one file per path. Sparse (legacy docs without
+    # a path are exempt) + migration dedupes same-name siblings first, so
+    # boot can never trip on pre-index data. Any older non-unique "path_1"
+    # index (from prior builds of this PR) is dropped first — same auto-name.
+    from pymongo.errors import OperationFailure
+    try:
+        await files_col.drop_index("path_1")
+    except OperationFailure:
+        pass                                   # nothing persisted yet
+    await files_col.create_index("path", unique=True, sparse=True)
     await folders_col.create_index("path", unique=True)
     await folders_col.create_index("owner")
     await shares_col.create_index("path_prefix")
