@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from treegent_common.auth import authenticate
 from treegent_common.perms import can, principal_for, resource_for
 
-from . import s3
+from . import storage
 from .config import db, files_col, settings
 
 router = APIRouter(tags=["files"])
@@ -73,7 +73,7 @@ async def upload(file: UploadFile, CLAIM_CALLER: str = "",
     fid = f"fil_{pysecrets.token_hex(8)}"
     s3_key = f"{caller_id}/{fid}/{file.filename}"
     content_type = file.content_type or "application/octet-stream"
-    await s3.put(s3_key, data, content_type)
+    await storage.put(s3_key, data, content_type)
     doc = {"_id": fid, "name": file.filename, "size": len(data),
            "content_type": content_type, "owner": caller_id,
            "shared_with": [s for s in shared_with.split(",") if s],
@@ -90,7 +90,7 @@ async def download(file_id: str, CLAIM_CALLER: str = "", _c: dict = Depends(call
     if not f:
         raise HTTPException(404, "no such file")
     await check(db, caller_id, "files.read", f)
-    data = await s3.get(f["s3_key"])
+    data = await storage.get(f["s3_key"])
     from fastapi import Response
     return Response(content=data, media_type=f.get("content_type"),
                     headers={"Content-Disposition":
@@ -106,7 +106,7 @@ async def presigned_url(file_id: str, CLAIM_CALLER: str = "", expires_s: int = 9
     if not f:
         raise HTTPException(404, "no such file")
     await check(db, caller_id, "files.read", f)
-    return {"url": await s3.presign_get(f["s3_key"], expires_s),
+    return {"url": await storage.presign_get(f["s3_key"], expires_s),
             "expires_s": expires_s}
 
 
@@ -133,6 +133,6 @@ async def delete_file(file_id: str, CLAIM_CALLER: str = "", _c: dict = Depends(c
         raise HTTPException(404, "no such file")
     if caller_id != f["owner"]:
         raise HTTPException(403, "only the owner may delete")
-    await s3.delete(f["s3_key"])
+    await storage.delete(f["s3_key"])
     await files_col.delete_one({"_id": file_id})
     return {"deleted": file_id}

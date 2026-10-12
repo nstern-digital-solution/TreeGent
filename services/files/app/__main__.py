@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from . import s3
+from . import storage
 from .config import ensure_indexes
 from .main import router
 
@@ -11,7 +11,7 @@ app = FastAPI(title="TreeGent files", version="0.1.0")
 async def _startup() -> None:
     await ensure_indexes()
     try:
-        await s3.ensure_bucket()
+        await storage.ensure_bucket()
     except Exception as e:  # noqa: BLE001
         print(f"S3 unavailable (files will fail until configured): {e}")
 
