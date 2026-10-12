@@ -50,9 +50,13 @@ client = AsyncIOMotorClient(settings.mongo_url)
 db = client[settings.db_name]
 
 files_col = db.files   # {_id, name, size, content_type, owner, shared_with,
-                       #  s3_key, created_at, updated_at}
+                       #  s3_key, path, kind:"file", created_at, updated_at}
+folders_col = db.folders   # {_id: fld_*, kind:"folder", path, owner, created_at}
 
 
 async def ensure_indexes() -> None:
     await files_col.create_index([("owner", 1), ("updated_at", -1)])
     await files_col.create_index("shared_with")
+    await files_col.create_index("path")
+    await folders_col.create_index("path", unique=True)
+    await folders_col.create_index("owner")
