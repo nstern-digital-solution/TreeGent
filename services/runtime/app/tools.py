@@ -26,9 +26,7 @@ class Services:
         self.key = agent_key
         self.agent_id = agent_id  # set by supervisor (key->agent from DB)
 
-    async def _call(self, base: str, path: str, method: str = "GET",
-                    body: dict | None = None, params: dict | None = None,
-                    timeout: float = 60.0) -> dict:
+    def _headers(self) -> dict:
         # R45: the agent key IS the agent-tier credential. The shared
         # service token rides along ONLY when the runtime itself runs on
         # the trusted central box (settings.service_token is empty on
@@ -41,8 +39,14 @@ class Services:
         # On central mode the shared token is still sent as before.
         if settings.service_token and not settings.host_key:
             headers["X-Service-Token"] = settings.service_token
+        return headers
+
+    async def _call(self, base: str, path: str, method: str = "GET",
+                    body: dict | None = None, params: dict | None = None,
+                    timeout: float = 60.0) -> dict:
         async with httpx.AsyncClient(timeout=timeout) as c:
-            r = await c.request(method, f"{base}{path}", headers=headers,
+            r = await c.request(method, f"{base}{path}",
+                                headers=self._headers(),
                                 json=body, params=params)
         # R72b: r.json() before the status check masked non-JSON error
         # bodies (plain-text 500s) as JSONDecodeError. Parse defensively.
@@ -54,6 +58,35 @@ class Services:
             raise RuntimeError(f"service {r.status_code}: "
                                f"{json.dumps(data)[:300]}")
         return data
+
+    async def _call_bytes(self, base: str, path: str,
+                          params: dict | None = None,
+                          timeout: float = 120.0) -> bytes:
+        """GET a binary body (files.download sends raw bytes)."""
+        async with httpx.AsyncClient(timeout=timeout) as c:
+            r = await c.get(f"{base}{path}", headers=self._headers(),
+                            params=params)
+        if r.status_code >= 400:
+            raise RuntimeError(f"service {r.status_code}: {r.text[:300]}")
+        return r.content
+
+    async def _upload(self, base: str, path: str, filename: str, data: bytes,
+                      content_type: str = "application/octet-stream",
+                      params: dict | None = None,
+                      timeout: float = 300.0) -> dict:
+        """multipart upload (files.push)."""
+        async with httpx.AsyncClient(timeout=timeout) as c:
+            r = await c.post(f"{base}{path}", headers=self._headers(),
+                             params=params,
+                             files={"file": (filename, data, content_type)})
+        try:
+            resp = r.json() if r.content else {}
+        except Exception:  # noqa: BLE001 — non-JSON body
+            resp = {"raw": r.text[:300]}
+        if r.status_code >= 400:
+            raise RuntimeError(f"service {r.status_code}: "
+                               f"{json.dumps(resp)[:300]}")
+        return resp
 
 
 # ---------------- path guard for workspace files ----------------
@@ -111,11 +144,12 @@ def _fetch_url_allowed(url: str) -> str | None:
 
 class ToolContext:
     def __init__(self, agent_id: str, workspace: str, svcs: Services,
-                 host_client=None):
+                 host_client=None, username: str = ""):
         self.agent_id = agent_id
         self.workspace = workspace
         self.svcs = svcs
         self.host_client = host_client   # hosted mode: host-tier client
+        self.username = username         # actor username (files.push subtree)
 
 
 
@@ -306,6 +340,98 @@ async def t_secret_write(ctx: ToolContext, args: dict) -> str:
               "username": args.get("username", ""),
               "url": args.get("url", ""), "notes": args.get("notes", "")})
     return f"stored {r['id']} ({r['name']})"
+
+
+# ---------------- shared file system (issue #51 D) ----------------
+
+async def t_files_ls(ctx: ToolContext, args: dict) -> str:
+    """List one directory of the shared file system: the folders and files
+    visible to you there. path defaults to "/"."""
+    path = str(args.get("path") or "/").strip() or "/"
+    r = await ctx.svcs._call(settings.files_url, "/files",
+                             params={"path": path})
+    folders = (r or {}).get("folders", []) if isinstance(r, dict) else []
+    files = (r or {}).get("files", []) if isinstance(r, dict) else []
+    lines = [f"[folder] {d.get('name', '?')}" for d in folders]
+    lines += [f"[file] {f.get('name', '?')} ({f.get('size') or 0} bytes)"
+              for f in files]
+    return "\n".join(lines) or "(empty)"
+
+
+async def t_files_pull(ctx: ToolContext, args: dict) -> str:
+    """Download a shared file into your workspace. path=<absolute file path
+    in the shared file system>, to=<workspace path> (default: the file
+    name). Never overwrites: pass overwrite=true to replace."""
+    path = str(args.get("path") or "").strip()
+    if not path:
+        return "ERROR: need 'path' (absolute file path in the shared file system)"
+    parent, _, name = path.rstrip("/").rpartition("/")
+    parent = parent or "/"
+    if not name:
+        return f"ERROR: {path!r} does not name a file"
+    try:
+        listing = await ctx.svcs._call(settings.files_url, "/files",
+                                       params={"path": parent})
+    except RuntimeError as e:
+        return f"ERROR: {e}"
+    match = None
+    for f in (listing or {}).get("files", []):
+        if f.get("name") == name:
+            match = f        # newest-ish: listing is sorted, first hit wins
+    if not match:
+        return f"ERROR: no visible file at {path}"
+    to = str(args.get("to") or name)
+    try:
+        dest = safe_ws_path(ctx.workspace, to)
+    except PermissionError as e:
+        return f"ERROR: {e}"
+    if os.path.exists(dest) and not args.get("overwrite"):
+        return (f"ERROR: {to} already exists in the workspace — pass "
+                f"overwrite=true to replace it")
+    try:
+        data = await ctx.svcs._call_bytes(settings.files_url,
+                                          f"/files/{match['id']}/download")
+    except RuntimeError as e:
+        return f"ERROR: {e}"
+    os.makedirs(os.path.dirname(dest) or ctx.workspace, exist_ok=True)
+    with open(dest, "wb") as fh:
+        fh.write(data)
+    return f"pulled {path} -> {to} ({len(data)} bytes)"
+
+
+async def t_files_push(ctx: ToolContext, args: dict) -> str:
+    """Upload a workspace file into YOUR OWN subtree of the shared file
+    system (/home/<you>/… — 100 MB cap). from=<workspace file>,
+    to_path=<absolute destination file path>."""
+    frm = str(args.get("from") or "").strip()
+    to_path = str(args.get("to_path") or "").strip()
+    if not frm or not to_path:
+        return "ERROR: need 'from' (workspace file) and 'to_path' (absolute destination)"
+    try:
+        src = safe_ws_path(ctx.workspace, frm)
+    except PermissionError as e:
+        return f"ERROR: {e}"
+    if not os.path.isfile(src):
+        return f"ERROR: no workspace file {frm!r}"
+    # own-subtree restriction (write side): /home/<username>/… only
+    home = f"/home/{ctx.username}" if getattr(ctx, "username", "") else ""
+    parent, _, name = to_path.rstrip("/").rpartition("/")
+    parent = parent or "/"
+    if (not home or not to_path.startswith(home + "/") or not name
+            or any(s == ".." for s in to_path.split("/"))):
+        return (f"ERROR: files.push is restricted to your own subtree "
+                f"/home/{ctx.username or '<you>'}/… — got {to_path!r}")
+    size = os.path.getsize(src)
+    if size > 100 * 1024 * 1024:
+        return "ERROR: file too large (100 MB cap)"
+    with open(src, "rb") as fh:
+        data = fh.read()
+    try:
+        r = await ctx.svcs._upload(settings.files_url, "/files", name, data,
+                                   params={"path": parent})
+    except RuntimeError as e:
+        return f"ERROR: {e}"
+    return f"pushed {frm} -> {r.get('path') or to_path} ({size} bytes)"
 
 
 async def t_exec(ctx: ToolContext, args: dict) -> str:
@@ -693,6 +819,9 @@ TOOLS: dict = {
     "secrets.list": t_secrets_list,
     "secrets.read": t_secret_read,
     "secrets.write": t_secret_write,
+    "files.ls": t_files_ls,
+    "files.pull": t_files_pull,
+    "files.push": t_files_push,
     "exec": t_exec,
     "ws.write": t_ws_write,
     "ws.read": t_ws_read,
@@ -757,6 +886,35 @@ TOOL_SCHEMAS = [
             "name": {"type": "string"}, "value": {"type": "string"},
             "username": {"type": "string"}, "url": {"type": "string"},
             "notes": {"type": "string"}, "required": ["name", "value"]}}},
+    {
+        "name": "files.ls",
+        "description": "list a directory of the shared file system: the "
+                       "folders and files visible to you there (path "
+                       "defaults to \"/\")",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string",
+                     "description": "absolute directory path"}}}},
+    {
+        "name": "files.pull",
+        "description": "download a shared file into your workspace. Refuses "
+                       "to overwrite an existing workspace file unless "
+                       "overwrite=true.",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string",
+                     "description": "absolute path of the file in the shared file system"},
+            "to": {"type": "string",
+                   "description": "workspace path to write (default: the file name)"},
+            "overwrite": {"type": "boolean"},
+            "required": ["path"]}}},
+    {
+        "name": "files.push",
+        "description": "upload a workspace file into YOUR OWN subtree of the "
+                       "shared file system (/home/<you>/…, 100 MB cap)",
+        "parameters": {"type": "object", "properties": {
+            "from": {"type": "string", "description": "workspace file path"},
+            "to_path": {"type": "string",
+                        "description": "absolute destination file path inside your own subtree"},
+            "required": ["from", "to_path"]}}},
     {
         "name": "exec", "description": "run a shell command in your workspace",
         "parameters": {"type": "object", "properties": {

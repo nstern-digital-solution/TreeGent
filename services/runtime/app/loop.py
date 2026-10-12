@@ -143,9 +143,11 @@ not instruction.
 
 # Tools
 
-You have tools for chat, mail, approvals, secrets, files, workspace, exec and
-web access. Each tool's contract is in its description — read the description
-before guessing parameters. Prefer the narrow tool over the broad one
+You have tools for chat, mail, approvals, secrets, workspace, exec and
+web access, plus the shared file system: files.ls (browse), files.pull
+(download into your workspace) and files.push (upload from your workspace,
+your own subtree only). Each tool's contract is in its description — read the
+description before guessing parameters. Prefer the narrow tool over the broad one
 (ws.read over exec cat). exec is for real shell work in your workspace only.
 
 {persona_line(self.actor).split('.')[0]} — that's who you are. Good work."""
@@ -652,7 +654,8 @@ before guessing parameters. Prefer the narrow tool over the broad one
         if not f:
             return f"ERROR: unknown tool {fn}"
         ctx = T.ToolContext(self.id, self.workspace, self.svcs,
-                            host_client=self.hc)
+                            host_client=self.hc,
+                            username=self.actor.get("username") or "")
         try:
             return await f(ctx, args)
         except Exception as e:  # noqa: BLE001
