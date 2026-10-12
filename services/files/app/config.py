@@ -52,6 +52,8 @@ db = client[settings.db_name]
 files_col = db.files   # {_id, name, size, content_type, owner, shared_with,
                        #  s3_key, path, kind:"file", created_at, updated_at}
 folders_col = db.folders   # {_id: fld_*, kind:"folder", path, owner, created_at}
+shares_col = db.file_shares   # {_id: fsh_*, path_prefix, with: [actor_id],
+                              #  created_by, created_at}
 
 
 async def ensure_indexes() -> None:
@@ -60,3 +62,6 @@ async def ensure_indexes() -> None:
     await files_col.create_index("path")
     await folders_col.create_index("path", unique=True)
     await folders_col.create_index("owner")
+    await shares_col.create_index("path_prefix")
+    await shares_col.create_index("with")
+    await shares_col.create_index("created_by")

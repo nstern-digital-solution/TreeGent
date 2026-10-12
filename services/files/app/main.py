@@ -19,7 +19,7 @@ from treegent_common.perms import (can, is_root_actor, principal_for,
                                    resource_for)
 
 from . import paths, storage
-from .config import db, files_col, folders_col, settings
+from .config import db, files_col, folders_col, settings, shares_col
 from .migrate import ensure_folder
 
 router = APIRouter(tags=["files"])
@@ -102,16 +102,33 @@ async def _owns_subtree(caller_id: str, username: str, path: str) -> bool:
     return bool(doc and doc.get("owner") == caller_id)
 
 
-def _visible_or(username: str, caller_id: str) -> list[dict]:
+async def _my_share_prefixes(caller_id: str) -> list[str]:
+    """Every path prefix shared WITH the caller (issue #51 C)."""
+    return [s["path_prefix"] async for s in
+            shares_col.find({"with": caller_id}, {"path_prefix": 1})]
+
+
+def _visible_or(username: str, caller_id: str, prefixes: list[str]) -> list[dict]:
     """Listing visibility (R40 own-scope — superiors are NOT included):
     own | member | inside my home | the navigation chain leading to my home
-    (so every user can browse down into their own subtree)."""
+    or to anything shared with me | anything inside a share covering me.
+    Documents along the navigation chain are visible so every user can
+    browse down into their own subtree and into shared trees."""
     home = home_of(username)
-    chain = [d for d in paths.ancestors(home) if d != paths.ROOT]
-    return [{"owner": caller_id}, {"shared_with": caller_id},
-            {"path": home},
-            {"path": {"$regex": "^" + re.escape(home) + "/"}},
-            {"path": {"$in": chain + [home]}}]
+    nav = {d for d in paths.ancestors(home) if d != paths.ROOT}
+    ors = [{"owner": caller_id}, {"shared_with": caller_id},
+           {"path": home},
+           {"path": {"$regex": "^" + re.escape(home) + "/"}}]
+    for s in prefixes:
+        # share prefix covers s and everything below it
+        if s == paths.ROOT:
+            ors.append({"path": {"$exists": True}})
+        else:
+            ors.append({"path": {"$regex": "^" + re.escape(s) + "(/|$)"}})
+        nav |= {d for d in paths.ancestors(s) if d != paths.ROOT} | {s}
+    if nav:
+        ors.append({"path": {"$in": sorted(nav)}})
+    return ors
 
 
 def _child_pattern(folder: str) -> str:
@@ -130,12 +147,13 @@ async def list_files(CLAIM_CALLER: str = "", q: str = "", path: str = "",
                      _c: dict = Depends(caller_actor)):
     caller_id = _c["_id"]  # R45: derived, never claimed
     username = _c.get("username") or caller_id
+    prefixes = await _my_share_prefixes(caller_id)
     if path:
         folder = paths.normalize_path(path)
         if folder is None:
             raise HTTPException(400, "bad path")
         sel: dict = {"path": {"$regex": _child_pattern(folder)},
-                     "$or": _visible_or(username, caller_id)}
+                     "$or": _visible_or(username, caller_id, prefixes)}
         if q:
             sel = {"$and": [sel, {"name": {"$regex": q, "$options": "i"}}]}
         folders = [{"name": paths.basename(d["path"]), "path": d["path"],
@@ -147,7 +165,7 @@ async def list_files(CLAIM_CALLER: str = "", q: str = "", path: str = "",
         return {"folders": folders, "files": files}
     # DEPRECATED (issue #51): legacy flat own+shared listing, kept for old
     # web clients until they browse by path — use ?path= instead.
-    query: dict = {"$or": _visible_or(username, caller_id)}
+    query: dict = {"$or": _visible_or(username, caller_id, prefixes)}
     if q:
         query = {"$and": [query, {"name": {"$regex": q, "$options": "i"}}]}
     return [fpub(f) async for f in
@@ -212,15 +230,27 @@ async def _validate_actors(actor_ids: list[str]) -> None:
 
 
 async def _can_read(caller_id: str, username: str, f: dict) -> bool:
-    """Read access: own | member | superior named-read (R40 rule engine) |
-    inside the caller's own subtree (files others drop into your home are
-    yours to read)."""
+    """Read access (issue #51 C): own | member | superior named-read (R40
+    rule engine) | any covering share | inside the caller's own subtree
+    (files others drop into your home are yours to read). Resolved per
+    request — a revoked share stops access immediately."""
     try:
         await check(db, caller_id, "files.read", f)
         return True
     except HTTPException:
         pass
-    return _in_home(username, f.get("path") or "")
+    p = f.get("path") or ""
+    if p and _in_home(username, p):
+        return True
+    if not p:
+        return False
+    if await shares_col.count_documents(
+            {"with": caller_id,
+             "$or": [{"path_prefix": p},
+                     {"path_prefix": {"$in": paths.ancestors(p)}}]},
+            limit=1):
+        return True
+    return await _owns_subtree(caller_id, username, p)
 
 
 @router.get("/files/{file_id}/download")
@@ -259,13 +289,21 @@ async def presigned_url(file_id: str, CLAIM_CALLER: str = "",
 @router.put("/files/{file_id}/share")
 async def share(file_id: str, body: dict, CLAIM_CALLER: str = "",
                 _c: dict = Depends(caller_actor)):
-    """Owner (or member) shares with more actors."""
+    """Set-replacement per-file sharing (issue #51 C, secrets parity):
+    `with` REPLACES the member list in full ([] = share with nobody).
+    Owner-only — members lost the mutation right (audit finding: a member
+    could re-share to outsiders). Names are validated against db.actors."""
     caller_id = _c["_id"]  # R45: derived, never claimed
     f = await files_col.find_one({"_id": file_id})
     if not f:
         raise HTTPException(404, "no such file")
-    await check(db, caller_id, "files.write", f)
-    new = sorted(set(f.get("shared_with", [])) | set(body.get("with", [])))
+    if caller_id != f["owner"] and not is_root_actor(_c):
+        raise HTTPException(403, "only the owner may change shares")
+    if not isinstance(body, dict) or "with" not in body:
+        raise HTTPException(400, "body must carry 'with' (the full list)")
+    members = list(body.get("with") or [])
+    await _validate_actors(members)
+    new = sorted(set(members))
     await files_col.update_one({"_id": file_id},
                                {"$set": {"shared_with": new,
                                          "updated_at": now()}})
@@ -332,3 +370,76 @@ async def delete_folder(folder_path: str, CLAIM_CALLER: str = "",
         raise HTTPException(409, "folder not empty")
     await folders_col.delete_one({"_id": doc["_id"]})
     return {"deleted": p}
+
+
+# ---------------- prefix shares (issue #51 C) ----------------
+
+def spub(s: dict) -> dict:
+    return {"id": s["_id"], "path_prefix": s["path_prefix"],
+            "with": s.get("with", []), "created_by": s.get("created_by"),
+            "created_at": s.get("created_at")}
+
+
+@router.post("/shares", status_code=201)
+async def create_share(body: dict, CLAIM_CALLER: str = "",
+                       _c: dict = Depends(caller_actor)):
+    """Share a path prefix (folder OR file) with actors. The share covers
+    the path and everything below it; access is resolved per request, so
+    later uploads inside the tree are covered immediately and revoking is
+    instant. Creator must own the prefix subtree — NO member re-sharing
+    (the audit hole): only the subtree owner and root may mutate shares.
+    Folder docs need not exist (future trees); `with` must be real actors."""
+    caller_id = _c["_id"]  # R45: derived, never claimed
+    username = _c.get("username") or caller_id
+    body = body or {}
+    p = paths.normalize_path(body.get("path") or "")
+    if p is None:
+        raise HTTPException(400, "bad path")
+    with_ = list(body.get("with") or [])
+    if not with_:
+        raise HTTPException(400, "'with' must name at least one actor")
+    await _validate_actors(with_)
+    if not is_root_actor(_c) and not await _owns_subtree(caller_id, username, p):
+        raise HTTPException(403, "only the subtree owner may change shares")
+    doc = {"_id": f"fsh_{pysecrets.token_hex(8)}", "path_prefix": p,
+           "with": sorted(set(with_)), "created_by": caller_id,
+           "created_at": now()}
+    await shares_col.insert_one(doc)
+    return spub(doc)
+
+
+@router.get("/shares")
+async def list_shares(CLAIM_CALLER: str = "", _c: dict = Depends(caller_actor)):
+    """Own subtree shares + the shares covering paths I can see."""
+    caller_id = _c["_id"]  # R45: derived, never claimed
+    username = _c.get("username") or caller_id
+    if is_root_actor(_c):
+        query: dict = {}
+    else:
+        home = home_of(username)
+        ors = [{"created_by": caller_id}, {"with": caller_id},
+               {"path_prefix": {"$regex": "^" + re.escape(home) + "(/|$)"}}]
+        async for d in folders_col.find({"owner": caller_id},
+                                        {"path": 1}):
+            top = _top_folder(d["path"])
+            if d["path"] == top:   # own trees: everything below my top folder
+                ors.append({"path_prefix":
+                            {"$regex": "^" + re.escape(top) + "(/|$)"}})
+        query = {"$or": ors}
+    return [spub(s) async for s in
+            shares_col.find(query).sort("created_at", -1).limit(500)]
+
+
+@router.delete("/shares/{share_id}")
+async def delete_share(share_id: str, CLAIM_CALLER: str = "",
+                       _c: dict = Depends(caller_actor)):
+    """Revoke a share — creator or root. Access is resolved per request,
+    so revocation takes effect on the very next call."""
+    caller_id = _c["_id"]  # R45: derived, never claimed
+    s = await shares_col.find_one({"_id": share_id})
+    if not s:
+        raise HTTPException(404, "no such share")
+    if caller_id != s.get("created_by") and not is_root_actor(_c):
+        raise HTTPException(403, "only the creator may revoke")
+    await shares_col.delete_one({"_id": share_id})
+    return {"deleted": share_id}
