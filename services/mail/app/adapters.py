@@ -311,22 +311,19 @@ async def sync_inbound(addresses: list[str] | None = None) -> dict:
                                              received_at=m.get("created_at"))
                     if r.get("delivered"):
                         imported += 1
-                        # R69 fix: pull-discovery wakes the owner once per
-                        # NEW mail (dedupe makes this idempotent). Without it
-                        # nothing ever signaled new inbound mail on any tier —
-                        # has_work's mail_pending count queried fields no
-                        # writer ever wrote.
-                        if mb.get("kind") == "personal":
-                            # per-MAIL id: each newly-discovered message wakes its
-                            # owner exactly once (upsert = idempotent on re-sync)
-                            await db.wake_events.update_one(
-                                {"_id": f"wke_pull_{m['id'][:24]}"},
-                                {"$setOnInsert": {
-                                    "agent_id": mb["owner"], "reason": "mail",
-                                    "consumed": False,
-                                    "created_at": now(), "detail":
-                                        f"new mail from {m.get('from')}"}},
-                                upsert=True)
+                        # R69 fix: pull-discovery wakes the recipient agents
+                        # once per NEW mail (dedupe makes this idempotent).
+                        # Without it nothing ever signaled new inbound mail on
+                        # any tier — has_work's mail_pending count queried
+                        # fields no writer ever wrote. #45: write the wake
+                        # through _wake_pull (full-id per-recipient
+                        # convention) so this import path and _heal_bodies
+                        # share ONE wake id and $setOnInsert dedupes across
+                        # both — the old inline wke_pull_<id[:24]> form keyed
+                        # the same mail differently and healed bodies re-woke
+                        # agents for mail they already had.
+                        await _wake_pull(m["id"], mb,
+                                         f"new mail from {m.get('from')}")
                     else:
                         failed += 1
             if stop or not page.get("has_more"):
