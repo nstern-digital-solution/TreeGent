@@ -155,6 +155,9 @@ async def get_job(job_id: str, agent: dict = Depends(auth_agent)):
         "status": j["status"],
         "result": j.get("result"),
         "error": j.get("error"),
+        # R78: the runtime's compaction budget reads the window from the
+        # polled job doc (stamped at the done-write)
+        "context_window": j.get("context_window"),
         "created_at": j.get("created_at"),
         "finished_at": j.get("finished_at"),
     }

@@ -11,6 +11,7 @@ enabled) — never code (R33). One generic OpenAI-compatible client serves
 every provider of kind 'openai-compat'."""
 import asyncio
 import json
+import os
 import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -307,6 +308,46 @@ async def embed_with_failover(inputs: list[str], cands: list[dict],
 
 # ---------------- metering + history (R34; tokens only, no pricing) ----
 
+# R78: context-window lookup for the job-doc stamp. The map is cached in
+# process — NEVER a Mongo read per job; refreshed when a model is missing
+# from the cache or when the cache is older than 5 min. A lookup failure
+# must NEVER fail a job: the default window is stamped instead.
+_CTX_CACHE_TTL_S = 300.0
+_ctx_windows: dict = {}
+_ctx_loaded_at = 0.0
+
+def _default_context_window() -> int:
+    """TG_DEFAULT_CONTEXT_WINDOW, else 32768 — conservative, so
+    compaction fires early rather than late (Felix R78)."""
+    raw = os.environ.get("TG_DEFAULT_CONTEXT_WINDOW", "").strip()
+    try:
+        v = int(raw)
+        if v > 0:
+            return v
+    except ValueError:
+        pass
+    return 32768
+
+async def context_window_for(model_id: str) -> int:
+    """R78: the served model's catalog context_window, default fallback
+    when the entry has none. Total — never raises."""
+    global _ctx_windows, _ctx_loaded_at
+    try:
+        stale = time.monotonic() - _ctx_loaded_at > _CTX_CACHE_TTL_S
+        if stale or model_id not in _ctx_windows:
+            m = {}
+            async for row in db.model_catalog.find({}, {"context_window": 1}):
+                m[row["_id"]] = row.get("context_window")
+            _ctx_windows = m
+            _ctx_loaded_at = time.monotonic()
+        w = _ctx_windows.get(model_id)
+        return w if isinstance(w, int) and w > 0 else _default_context_window()
+    except Exception as e:  # noqa: BLE001 — never fail a job over this
+        print(f"[proxy] context_window lookup failed for {model_id}: "
+              f"{type(e).__name__}: {str(e)[:120]}", flush=True)
+        return _default_context_window()
+
+
 async def meter(job: dict, model_id: str, status: str, queue_wait_s: float):
     """R69 fix: idempotent — one usage row per (job, attempt). A crash
     after metering used to leave the job dispatched; requeue_stale then
@@ -347,8 +388,12 @@ async def process_job(job: dict):
         # meter and the done-write used to leave the job dispatched and
         # requeue it forever (paid loop). Now a post-terminal crash at
         # worst loses the usage row for THIS attempt, never the job.
+        # R78: the done doc also carries the served model's context_window
+        # (cached catalog lookup, default fallback) — the runtime's
+        # compaction budget reads it from the polled job.
         await db.jobs.update_one({"_id": job["_id"]}, {"$set": {
             "model": model_id, "result": resp,
+            "context_window": await context_window_for(model_id),
             "tokens_in": usage.get("prompt_tokens") or 0,
             "tokens_out": usage.get("completion_tokens") or 0,
             "status": "done", "finished_at": now()}})
