@@ -288,7 +288,8 @@ async def t_mail_read(ctx: ToolContext, args: dict) -> str:
     for m in msgs:
         d = "→" if m.get("direction") == "out" else "←"
         line = (f"[{m.get('ts', '')}] {d} from {m.get('from') or '?'} "
-                f"| {m.get('subject', '')}")
+                f"| {m.get('subject', '')} "
+                f"(id: {m.get('id') or m.get('_id') or '?'})")
         # issue #60 (notify-only): attachments are LISTED, never downloaded
         # here — mail.save_attachment fetches one on explicit request
         for a in m.get("attachments") or []:

@@ -93,6 +93,30 @@ def test_mail_read_renders_attach_lines():
     line = next(l for l in out.splitlines() if "report" in l and "←" in l)
     assert "| attach: report.pdf (13 KB, application/pdf)" in line, line
     assert "| attach: notes.txt (2 KB, text/plain)" in line, line
+    # review #61: the row id IS the documented input of mail.save_attachment
+    # — mail.read must surface it (pins the handoff contract, not just render)
+    assert "(id: mail_1)" in line, line
+
+
+def test_mail_read_to_save_attachment_round_trip():
+    """The production handoff: derive the id from mail.read's OUTPUT and
+    feed it to mail.save_attachment (review #61 blocking finding)."""
+    import os
+    ws = tempfile.mkdtemp()
+    svcs = StubServices(messages={"mbx_p": [msg_with([ATT_REPORT])]})
+    out = run(T.t_mail_read(ctx(svcs, ws), {}))
+    import re as _re
+    mid = _re.search(r"\(id: (mail_[a-z0-9_]+)\)", out).group(1)
+    assert mid == "mail_1", mid
+    # bytes come back via the stubbed download endpoint path
+    svcs2 = StubServices(messages={"mbx_p": [msg_with([ATT_REPORT])]})
+    out2 = run(T.t_mail_save_attachment(ctx(svcs2, ws),
+                                        {"mail": mid, "filename": "report.pdf"}))
+    assert "ERROR" not in out2, out2
+    saved = os.path.join(ws, "attachments", "report.pdf")
+    assert os.path.exists(saved), out2
+    with open(saved, "rb") as fh:
+        assert fh.read() == b"PDFBYTES"
 
 
 def test_mail_read_no_attachments_no_attach_segment():
