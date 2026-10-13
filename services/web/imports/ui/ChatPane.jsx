@@ -69,7 +69,7 @@ function NewGroupForm({ me, actorsById, onDone, onError }) {
     Meteor.call('tg.createChannel', trimmed, memberIds, (err, convId) => {
       setBusy(false);
       if (err) { onError(err.message); return; }
-      onDone(resp);
+      onDone(convId);
     });
   };
 
