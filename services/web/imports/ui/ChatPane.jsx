@@ -7,6 +7,7 @@ import { Markdown } from './Markdown.jsx';
 export function ChatPane({ me }) {
   const [activeId, setActiveId] = useState(null);
   const [error, setError] = useState('');
+  const [showNew, setShowNew] = useState(false);
 
   const { convs, actorsById, ready } = useTracker(() => {
     const s1 = Meteor.subscribe('conversations');
@@ -40,13 +41,56 @@ export function ChatPane({ me }) {
               {label(c)}
             </li>
           ))}
-          {ready && convs.length === 0 && <li className="muted">No conversations yet — open one from the Roster</li>}
+          {ready && convs.length === 0 && <li className="muted">No conversations yet — open one from the Roster or create a group</li>}
         </ul>
+        <button className="new-group-btn" onClick={() => setShowNew(!showNew)}>+ New group</button>
+        {showNew && <NewGroupForm me={me} actorsById={actorsById} onCreated={(id) => { setShowNew(false); setActiveId(id); }} onError={setError} />}
       </aside>
       <main className="chatpane">
         {active ? <MessageList conv={active} me={me} actorsById={actorsById} /> : <div className="empty">Select a conversation</div>}
       </main>
     </div>
+  );
+}
+
+function NewGroupForm({ me, actorsById, onCreated, onError }) {
+  const [name, setName] = useState('');
+  const [selected, setSelected] = useState({});
+  const [busy, setBusy] = useState(false);
+  const candidates = Object.values(actorsById).filter((a) => a._id !== (me && me._id));
+  const toggle = (id) => setSelected((s) => ({ ...s, [id]: !s[id] }));
+
+  const create = (e) => {
+    e.preventDefault();
+    const trimmed = name.trim();
+    if (!trimmed || busy) return;
+    setBusy(true);
+    const memberIds = Object.keys(selected).filter((id) => selected[id]);
+    Meteor.call('tg.createChannel', trimmed, memberIds, (err, convId) => {
+      setBusy(false);
+      if (err) { onError(err.message); return; }
+      onCreated(convId);
+    });
+  };
+
+  return (
+    <form className="new-group" onSubmit={create}>
+      <input className="ng-name" value={name} onChange={(e) => setName(e.target.value)}
+        placeholder="Group name" autoComplete="off" autoFocus />
+      <div className="ng-members">
+        {candidates.map((a) => (
+          <label key={a._id} className="ng-member">
+            <input type="checkbox" checked={!!selected[a._id]} onChange={() => toggle(a._id)} />
+            {a.display_name} <span className="muted">@{a.username}</span>
+          </label>
+        ))}
+        {candidates.length === 0 && <div className="muted">No other actors yet</div>}
+      </div>
+      <div className="ng-actions">
+        <button type="button" className="ghost" onClick={() => onCreated(null)}>Cancel</button>
+        <button disabled={!name.trim() || busy}>{busy ? 'Creating…' : 'Create'}</button>
+      </div>
+    </form>
   );
 }
 
