@@ -44,7 +44,7 @@ export function ChatPane({ me }) {
           {ready && convs.length === 0 && <li className="muted">No conversations yet — open one from the Roster or create a group</li>}
         </ul>
         <button className="new-group-btn" onClick={() => setShowNew(!showNew)}>+ New group</button>
-        {showNew && <NewGroupForm me={me} actorsById={actorsById} onCreated={(id) => { setShowNew(false); setActiveId(id); }} onError={setError} />}
+        {showNew && <NewGroupForm me={me} actorsById={actorsById} onDone={(c) => { setShowNew(false); if (c) setActiveId(c.id); }} onError={setError} />}
       </aside>
       <main className="chatpane">
         {active ? <MessageList conv={active} me={me} actorsById={actorsById} /> : <div className="empty">Select a conversation</div>}
@@ -53,7 +53,7 @@ export function ChatPane({ me }) {
   );
 }
 
-function NewGroupForm({ me, actorsById, onCreated, onError }) {
+function NewGroupForm({ me, actorsById, onDone, onError }) {
   const [name, setName] = useState('');
   const [selected, setSelected] = useState({});
   const [busy, setBusy] = useState(false);
@@ -69,7 +69,7 @@ function NewGroupForm({ me, actorsById, onCreated, onError }) {
     Meteor.call('tg.createChannel', trimmed, memberIds, (err, convId) => {
       setBusy(false);
       if (err) { onError(err.message); return; }
-      onCreated(convId);
+      onDone(resp);
     });
   };
 
@@ -87,7 +87,7 @@ function NewGroupForm({ me, actorsById, onCreated, onError }) {
         {candidates.length === 0 && <div className="muted">No other actors yet</div>}
       </div>
       <div className="ng-actions">
-        <button type="button" className="ghost" onClick={() => onCreated(null)}>Cancel</button>
+        <button type="button" className="ghost" onClick={() => onDone(null)}>Cancel</button>
         <button disabled={!name.trim() || busy}>{busy ? 'Creating…' : 'Create'}</button>
       </div>
     </form>
