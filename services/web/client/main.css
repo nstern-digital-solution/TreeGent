@@ -141,3 +141,26 @@ table.data th, table.data td { border: 1px solid var(--border, #ccc); padding: 3
   0%, 100% { transform: scale(1); opacity: 1; }
   50%      { transform: scale(1.35); opacity: .7; }
 }
+
+/* markdown in chat (issue #46) — message bodies are compact by default:
+   no inherited paragraph gaps, tight blocks, monospace where it matters. */
+.msg .text { display: block; }
+.msg .text .md-p { margin: 0 0 0.35em; }
+.msg .text .md-p:last-child { margin-bottom: 0; }
+.msg .text .md-pre { margin: 0.3em 0; padding: 0.4em 0.6em; overflow-x: auto;
+  background: #1c1f26; border: 1px solid #2b303a; border-radius: 4px;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre; }
+.msg .text code { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #1c1f26; padding: 0.1em 0.3em; border-radius: 3px; }
+.msg .text .md-pre code { background: none; padding: 0; }
+.msg .text .md-ul { margin: 0.25em 0 0.4em; padding-left: 1.3em; }
+.msg .text .md-quote { margin: 0.3em 0; padding: 0.1em 0.7em;
+  border-left: 3px solid #3a4150; color: #9aa3b2; }
+.msg .text .md-h { margin: 0.45em 0 0.25em; font-weight: 600; }
+.msg .text .md-h1 { font-size: 1.15em; }
+.msg .text .md-h2 { font-size: 1.08em; }
+.msg .text .md-h3 { font-size: 1em; }
+.msg .text .md-h4, .msg .text .md-h5, .msg .text .md-h6 { font-size: 0.95em; }
+.msg .text hr { border: none; border-top: 1px solid #2b303a; margin: 0.5em 0; }
+.msg .text a { color: #6cb2ff; }
