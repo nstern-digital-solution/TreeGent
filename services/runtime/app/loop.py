@@ -76,6 +76,11 @@ class Agent:
         # unconsumed (it used to fire for hosted rows only).
         self._pending_central = False
         self._turn_lines: list[dict] = []       # R57: transcript lines this turn
+        # R78: token measurement from the LAST main-loop generation
+        # (usage.prompt_tokens + the job doc's context_window) — drives the
+        # compaction trigger; 0 = not yet measured (backstop only).
+        self.last_prompt_tokens = 0
+        self.context_window = 0
 
     def _base_prompt(self) -> str:
         """Operating core of the system prompt (below the soul block)."""
@@ -176,6 +181,10 @@ description before guessing parameters. Prefer the narrow tool over the broad on
         if self.hc is not None:
             from . import hostclient
             self.messages = hostclient.load_messages(self.workspace) or self.messages
+            # R78: the token measurement survives restarts (sidecar meta)
+            meta = hostclient.load_life_meta(self.workspace)
+            self.last_prompt_tokens = int(meta.get("last_prompt_tokens") or 0)
+            self.context_window = int(meta.get("context_window") or 0)
             self._regen_system_prompt()
             self._life_loaded = True
             return
@@ -191,6 +200,10 @@ description before guessing parameters. Prefer the narrow tool over the broad on
                     "role": "system",
                     "content": SOUL.soul_block(self.workspace)
                                + "\n\n" + self._base_prompt()}
+        if doc:
+            # R78: restore the token measurement alongside the messages
+            self.last_prompt_tokens = int(doc.get("last_prompt_tokens") or 0)
+            self.context_window = int(doc.get("context_window") or 0)
         self._life_loaded = True
 
     async def _save_life(self) -> None:
@@ -198,10 +211,17 @@ description before guessing parameters. Prefer the narrow tool over the broad on
             # R56: transcript lives on THIS box (atomic jsonl rewrite)
             from . import hostclient
             hostclient.save_messages(self.workspace, self.messages)
+            # R78: persist the token measurement too (restarts keep it)
+            hostclient.save_life_meta(self.workspace, {
+                "last_prompt_tokens": getattr(self, "last_prompt_tokens", 0),
+                "context_window": getattr(self, "context_window", 0)})
             return
         await _cdb().agent_sessions.update_one(
             {"_id": self.id},
             {"$set": {"messages": self.messages,
+                      # R78: the compaction measurement rides the life doc
+                      "last_prompt_tokens": getattr(self, "last_prompt_tokens", 0),
+                      "context_window": getattr(self, "context_window", 0),
                       "updated_at": now(),
                       "username": self.actor.get("username")}},
             upsert=True)
@@ -483,6 +503,18 @@ description before guessing parameters. Prefer the narrow tool over the broad on
                                     "turn."})
                     break
                 msg = result["result"]["choices"][0]["message"]
+                # R78: capture the token measurement — usage.prompt_tokens
+                # from the provider response + context_window stamped on
+                # the job doc by the proxy. MAIN turn loop ONLY: compact
+                # and dreamer generations run in separate contexts and
+                # must never move these fields.
+                _usage = (result.get("result") or {}).get("usage") or {}
+                _pt = _usage.get("prompt_tokens")
+                if isinstance(_pt, (int, float)) and _pt >= 0:
+                    self.last_prompt_tokens = int(_pt)
+                _cw = result.get("context_window")
+                if isinstance(_cw, (int, float)) and _cw > 0:
+                    self.context_window = int(_cw)
                 assistant: dict = {"role": "assistant",
                                    "content": msg.get("content") or ""}
                 calls = msg.get("tool_calls") or []

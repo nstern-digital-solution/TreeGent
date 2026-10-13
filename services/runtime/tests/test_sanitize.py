@@ -66,3 +66,32 @@ def test_repeated_notification_lines_kept():
     users = [m["content"] for m in out if m.get("role") == "user"]
     assert users == [note, note], f"per-turn notifications must be kept, got {users}"
     print("PASS: repeated notification lines across turns are kept")
+
+
+def test_tail_cap_2500_boundary():
+    """R78: the tail-cap is 2500 — 2500 messages pass through intact,
+    2501 caps to 2500 keeping the NEWEST (system prompt kept), and the
+    2000-msg compaction backstop fires BEFORE the cap (trigger < cap:
+    information must never silently leave the context first)."""
+    from app import qtree
+
+    def gen(n):
+        return [{"role": "system", "content": "soul"}] + \
+               [{"role": "user", "content": f"m{i}"} for i in range(n)]
+
+    out = _sanitize(gen(2499))
+    assert len(out) == 2500, f"2500 total must pass through, got {len(out)}"
+    out = _sanitize(gen(2500))
+    assert len(out) == 2500, f"2501 total must cap at 2500, got {len(out)}"
+    assert out[0]["role"] == "system", "system prompt must survive the cap"
+    assert out[-1]["content"] == "m2499", "newest must survive the cap"
+    assert out[1]["content"] == "m1", f"oldest dropped first, got {out[1]}"
+    # trigger < cap invariant (R70 preserved): the backstop compacts at
+    # 2000 non-system messages, well before the 2500 cap could bite
+    assert qtree.COMPACT_TRIGGER_MSGS == 2000
+    assert qtree.COMPACT_TRIGGER_MSGS < 2500
+    out = _sanitize(gen(2000))
+    assert len(out) == 2001, \
+        "at the trigger point nothing may be tail-capped away"
+    print("PASS sanitize cap 2500: 2500 pass, 2501->2500 newest kept, "
+          "backstop 2000 < cap")

@@ -103,12 +103,15 @@ async def delete_class(name: str, _: None = Depends(require_service)):
     return {"deleted": name}
 
 
-# ---------- model catalog (rank / designation / exclusion) ----------
+# ---------- model catalog (rank / designation / exclusion / window) ----
 
 class ModelPolicyIn(BaseModel):
     designations: list[str] | None = None   # e.g. ["agent"] or ["agent","task"]
     rank: int | None = None
     excluded: bool | None = None
+    # R78: the model's maximum context window in tokens — the compaction
+    # budget rides on it (the dispatcher stamps it on every done job doc).
+    context_window: int | None = None
 
 
 @router.get("/catalog")
@@ -120,14 +123,16 @@ async def list_catalog(_: None = Depends(require_service)):
                     "rank": m.get("rank", 0),
                     "modalities": m.get("modalities", []),
                     "excluded": m.get("excluded", False),
-                    "ctx": m.get("ctx")})
+                    "ctx": m.get("ctx"),
+                    "context_window": m.get("context_window")})
     return out
 
 
 @router.put("/models/{model_id:path}/policy")
 async def set_model_policy(model_id: str, body: ModelPolicyIn,
                            _: None = Depends(require_service)):
-    """Admin policy on a model: designations, rank, excluded."""
+    """Admin policy on a model: designations, rank, excluded,
+    context_window (R78 — optional, set/get like the other levers)."""
     upd: dict = {}
     if body.designations is not None:
         bad = [d for d in body.designations if d not in await class_names()]
@@ -138,6 +143,11 @@ async def set_model_policy(model_id: str, body: ModelPolicyIn,
         upd["rank"] = body.rank
     if body.excluded is not None:
         upd["excluded"] = body.excluded
+    if body.context_window is not None:
+        if body.context_window <= 0:
+            raise HTTPException(400, "context_window must be a positive "
+                                "token count")
+        upd["context_window"] = body.context_window
     if not upd:
         raise HTTPException(400, "nothing to update")
     r = await db.model_catalog.update_one({"_id": model_id}, {"$set": upd})

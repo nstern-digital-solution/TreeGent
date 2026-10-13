@@ -14,13 +14,15 @@ from app.hostclient import _sanitize  # noqa: E402
 
 
 def _tool_exchange(tc_id="c1"):
-    """assistant(tool_calls) -> tool result, the indivisible group."""
+    """assistant(tool_calls) -> tool result, the indivisible group.
+    Both contents are fixed-width (10 chars) so tests can position the
+    R78 drop boundary by message count (uniform char proportion)."""
     return [
-        {"role": "assistant", "content": "",
+        {"role": "assistant", "content": "call".ljust(10, "."),
          "tool_calls": [{"id": tc_id, "type": "function",
                          "function": {"name": "run", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": tc_id,
-         "content": "result for " + tc_id},
+         "content": "result".ljust(10, ".")},
     ]
 
 
@@ -79,10 +81,12 @@ def test_sanitize_cut_at_group_start_keeps_group():
     print("PASS issue #12 group start: roles =", roles)
 
 
-def _stub_agent(msgs):
+def _stub_agent(msgs, pt=0, cw=0):
     class StubAgent:
         def __init__(self, msgs):
             self.messages = msgs
+            self.last_prompt_tokens = pt
+            self.context_window = cw
             self.workspace = tempfile.mkdtemp(prefix="qtree_i12")
             self.regened = False
 
@@ -101,11 +105,11 @@ def test_compact_drop_no_orphan_tool():
     C._gen = _ok_gen
     msgs = [{"role": "system", "content": "s"}]
     for i in range(299):                    # fillers before the exchange
-        msgs.append({"role": "user", "content": f"filler {i}"})
+        msgs.append({"role": "user", "content": f"filler {i:03d}"})
     msgs += _tool_exchange("cc")            # boundary lands between the two
     for i in range(199):                    # 500 non-system msgs total
-        msgs.append({"role": "user", "content": f"tail filler {i}"})
-    a = _stub_agent(msgs)
+        msgs.append({"role": "user", "content": f"filler {i:03d}"})
+    a = _stub_agent(msgs, pt=62_400, cw=100_000)
     asyncio.run(C.maybe_compact(a))
     kept = [m for m in a.messages if m.get("role") != "system"]
     roles = [m["role"] for m in kept]
@@ -124,11 +128,11 @@ def test_compact_drop_at_group_start_keeps_group():
     C._gen = _ok_gen
     msgs = [{"role": "system", "content": "s"}]
     for i in range(300):                    # drop set = exactly the fillers
-        msgs.append({"role": "user", "content": f"filler {i}"})
+        msgs.append({"role": "user", "content": f"filler {i:03d}"})
     msgs += _tool_exchange("cd")            # kept from the group start
     for i in range(198):
-        msgs.append({"role": "user", "content": f"tail filler {i}"})
-    a = _stub_agent(msgs)
+        msgs.append({"role": "user", "content": f"filler {i:03d}"})
+    a = _stub_agent(msgs, pt=62_400, cw=100_000)
     asyncio.run(C.maybe_compact(a))
     kept = [m for m in a.messages if m.get("role") != "system"]
     roles = [m["role"] for m in kept]
