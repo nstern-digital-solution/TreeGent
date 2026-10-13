@@ -119,13 +119,14 @@ def test_context_block():
 
 
 def test_needs_compaction():
-    msgs = [{"role": "system", "content": "s" * 50000},
-            {"role": "user", "content": "u" * 400000},
-            {"role": "assistant", "content": "a" * 400000}]
-    assert not qtree.needs_compaction(msgs)   # 800k < 1.2M
-    msgs.append({"role": "user", "content": "u" * 500000})
-    assert qtree.needs_compaction(msgs)       # 1.3M > 1.2M
-    print("PASS trigger threshold")
+    """R78 trigger: strictly > 50% of the context window (0.50x exactly
+    does NOT fire); the old char trigger is retired."""
+    few = [{"role": "system", "content": "s"},
+           {"role": "user", "content": "u" * 400000}]
+    assert not qtree.needs_compaction(few, 49_000, 100_000)   # 0.49x
+    assert not qtree.needs_compaction(few, 50_000, 100_000)   # 0.50x exactly
+    assert qtree.needs_compaction(few, 51_000, 100_000)       # 0.51x
+    print("PASS trigger threshold: 0.49x/0.50x no, 0.51x yes")
 
 
 def test_gen_failure_degrades():
@@ -170,26 +171,35 @@ if __name__ == "__main__":
 
 
 def test_count_trigger():
-    """Short-message sessions compact on COUNT before _sanitize's 500 cap."""
-    gen = fake_gen_factory([])
-    ws = tempfile.mkdtemp(prefix="qtree6")
-    msgs = [{"role": "system", "content": "sys"}]
-    for i in range(410):   # 410 non-system msgs, tiny chars
-        msgs.append({"role": "user", "content": f"m{i}"})
-    assert qtree.needs_compaction(msgs), "count path must fire"
-    small = msgs[:20]
-    assert not qtree.needs_compaction(small)
-    print("PASS count trigger: 410 msgs fires, 19 does not")
+    """R78 backstop: the message COUNT fires at 2000 (guard only) — and
+    chars are irrelevant: a 10M-char log with tiny tokens and few
+    messages must NOT compact (the retired char trigger would have)."""
+    def msgs(n):
+        return [{"role": "system", "content": "sys"}] + \
+               [{"role": "user", "content": f"m{i}"} for i in range(n)]
+    assert not qtree.needs_compaction(msgs(1999)), "1999 must not fire"
+    assert qtree.needs_compaction(msgs(2000)), "2000 must fire"
+    assert qtree.needs_compaction(msgs(2001)), "2001 must fire"
+    # char-count irrelevance
+    huge = [{"role": "system", "content": "s"},
+            {"role": "user", "content": "x" * 5_000_000},
+            {"role": "assistant", "content": "y" * 5_000_000}]
+    assert not qtree.needs_compaction(huge, 100, 100_000), \
+        "10M chars + tiny tokens + few msgs = NO compaction"
+    print("PASS count backstop: 1999 no / 2000-2001 yes; chars irrelevant")
 
 
 def test_compact_maybe_both_paths():
-    """maybe_compact honors both budgets via a stub agent."""
-    import asyncio
+    """maybe_compact drives both R78 paths via a stub agent: the token
+    path drops to the 25% landing zone, the backstop path keeps the
+    newest 1000."""
     from app import compact as C
 
     class StubAgent:
-        def __init__(self, msgs):
+        def __init__(self, msgs, pt=0, cw=0):
             self.messages = msgs
+            self.last_prompt_tokens = pt
+            self.context_window = cw
             self.workspace = tempfile.mkdtemp(prefix="qtree7")
             self.regened = False
         def _regen_system_prompt(self):
@@ -197,17 +207,27 @@ def test_compact_maybe_both_paths():
 
     async def ok_gen(agent, prompt): return "stub summary"
 
-    # count path: many tiny messages
+    # token path: 500 uniform 10-char messages, 62.4% of the window used
+    # -> exactly 300 oldest dropped (est lands at 24960 <= 25000)
     msgs = [{"role": "system", "content": "s"}]
     for i in range(500):
-        msgs.append({"role": "user", "content": f"tiny {i}"})
-    a = StubAgent(msgs)
+        msgs.append({"role": "user", "content": f"filler {i:03d}"})
+    a = StubAgent(msgs, pt=62_400, cw=100_000)
     C._gen = ok_gen
     stats = asyncio.run(C.maybe_compact(a))
     kept = len(a.messages) - 1
-    print("PASS maybe_compact count path:", stats, "kept", kept, "regen:", a.regened)
-    assert stats.get("entries") == 1 and kept < 500
+    assert stats.get("entries") == 1 and kept == 200, (stats, kept)
     assert a.regened, "system prompt must be regenerated on success"
+    # backstop path: 2100 tiny messages, no usage data -> keep newest 1000
+    msgs = [{"role": "system", "content": "s"}]
+    for i in range(2100):
+        msgs.append({"role": "user", "content": f"tiny {i}"})
+    a = StubAgent(msgs)
+    stats = asyncio.run(C.maybe_compact(a))
+    kept = len(a.messages) - 1
+    assert stats.get("entries") == 1 and kept == 1000, (stats, kept)
+    print("PASS maybe_compact: token path keeps 200/500, backstop keeps "
+          "1000/2100, regen:", a.regened)
 
 
 def test_issue4_episodic_strip_idempotent():
@@ -312,8 +332,10 @@ def test_issue9_summarize_failure_keeps_context():
     from app import compact as C
 
     class StubAgent:
-        def __init__(self, msgs):
+        def __init__(self, msgs, pt=0, cw=0):
             self.messages = msgs
+            self.last_prompt_tokens = pt
+            self.context_window = cw
             self.workspace = tempfile.mkdtemp(prefix="qtree_i9")
             self.regened = False
         def _regen_system_prompt(self):
@@ -323,18 +345,18 @@ def test_issue9_summarize_failure_keeps_context():
         raise RuntimeError("provider 5xx")
 
     msgs = [{"role": "system", "content": "sys"}]
-    # 500 non-system msgs: the count budget drops the oldest 500-200 = 300
-    last_dropped = 500 - qtree.COMPACT_TRIGGER_MSGS // 2 - 1
+    # 500 uniform 400-char messages: the token path (62.4% of a 100k
+    # window) drops the oldest 300 — HEAD at 0, TAIL at the LAST dropped
+    # (299). Uniform width makes the char-proportion estimate exact.
     for i in range(500):
-        pad = "x" * 300
         if i == 0:
-            content = "HEAD-KEEP-ME " + pad          # head of dropped material
-        elif i == last_dropped:
-            content = pad + " TAIL-KEEP-ME"          # tail of dropped material
+            content = "HEAD-KEEP-ME ".ljust(400, "x")
+        elif i == 299:
+            content = ("x" * 200 + " TAIL-KEEP-ME").ljust(400, "x")
         else:
-            content = f"msg {i} " + pad
+            content = f"msg {i} ".ljust(400, "x")
         msgs.append({"role": "user", "content": content})
-    a = StubAgent(list(msgs))
+    a = StubAgent(list(msgs), pt=62_400, cw=100_000)
     before = list(a.messages)
     C._gen = bad_gen
     stats = asyncio.run(C.maybe_compact(a))

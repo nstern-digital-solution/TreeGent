@@ -124,14 +124,19 @@ def _bound_content(content: str) -> str:
     return content
 
 
-def _sanitize(messages: list[dict], max_messages: int = 500) -> list[dict]:
+def _sanitize(messages: list[dict], max_messages: int = 2500) -> list[dict]:
     """Heal the failure-storm bloat: a dead provider used to leave
     hundreds of identical user lines (re-appended unread backlogs and
     '[generation failed]' retry stubs). Drop failure stubs, collapse
     only CONSECUTIVE repeats of identical user content (what a
     re-append/re-delivery storm actually is — a re-delivered old
     message between newer ones is a real repeat and must be kept),
-    keep the newest tail."""
+    keep the newest tail.
+
+    R78: the tail-cap is 2500 so qtree's 2000-message backstop still
+    fires BEFORE silent tail-cap loss (R70 invariant preserved:
+    trigger < cap — information must never silently leave the context;
+    the cap only catches a compaction failure)."""
     out = []
     for m in messages:
         role = m.get("role")
@@ -169,8 +174,8 @@ def _sanitize(messages: list[dict], max_messages: int = 500) -> list[dict]:
     # Context budget: cap TOTAL chars so accumulation without compaction
     # can't explode again. The SYSTEM prompt is never elided; the rest is
     # trimmed oldest-first until the non-system content fits the budget.
-    # 2M chars ~ 500k tokens: comfortably above the 1.2M-char compaction
-    # trigger (R73) — this ceiling only catches a compaction failure.
+    # 2M chars: this ceiling only catches a compaction failure (R78's
+    # compaction trigger is the provider-reported token count, not chars).
     budget = 2_000_000
     syslen = len(system_msg.get("content") or "") if system_msg else 0
     pre_budget = len(tail)
@@ -218,3 +223,28 @@ def save_messages(workspace: str, messages: list[dict]) -> None:
         lines.append(json.dumps(m))
     tmp.write_text("\n".join(lines) + "\n")
     os.replace(tmp, p)   # atomic: crash never truncates the transcript
+
+
+def life_meta_path(workspace: str) -> Path:
+    """Sidecar next to the transcript: the R78 token measurement."""
+    return session_path(workspace).with_name("current.meta.json")
+
+
+def load_life_meta(workspace: str) -> dict:
+    """R78: last_prompt_tokens / context_window, persisted next to the
+    transcript so restarts keep the compaction measurement. Total —
+    missing or corrupt meta degrades to {} (backstop-only trigger)."""
+    p = life_meta_path(workspace)
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(errors="replace")) or {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_life_meta(workspace: str, meta: dict) -> None:
+    p = life_meta_path(workspace)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(meta))
+    os.replace(tmp, p)   # atomic, same as the transcript

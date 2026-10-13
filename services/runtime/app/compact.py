@@ -1,18 +1,21 @@
 """R70 wiring: quadtree compaction inside the agent loop.
 
 Compaction points:
-  1. TURN END — if the chatlog crosses qtree.COMPACT_TRIGGER_CHARS, the
-     OLDEST non-system messages (down to half the trigger) are summarized
-     into the quadtree and the context trimmed ONLY on success. If the
-     summary cannot be generated (issue #9), the messages STAY in the
-     live context and compaction retries next turn; the material is also
-     persisted verbatim to memory/qtree/raw/ first. Nothing silently
-     disappears anymore.
+  1. TURN END — when qtree.needs_compaction fires (Felix R78: the last
+     generation's usage.prompt_tokens above 50% of the model's context
+     window, or the 2000-message backstop), the OLDEST non-system
+     messages are summarized into the quadtree and the context trimmed
+     ONLY on success. If the summary cannot be generated (issue #9), the
+     messages STAY in the live context and compaction retries next turn;
+     the material is also persisted verbatim to memory/qtree/raw/ first.
+     Nothing silently disappears anymore.
   2. CONTEXT BLOCK — soul_block() appends the qtree view (every unrolled
      entry of every level — R75 lifetime coverage), so every generation
      carries gapless coverage of the whole compacted life.
-  3. RESTORE — _sanitize tail-caps at 500 messages; the qtree
-     context block covers whatever fell outside that window long-term.
+  3. RESTORE — _sanitize tail-caps at 2500 messages (R78: above the
+     2000-msg backstop, so the backstop fires BEFORE silent tail-cap
+     loss); the qtree context block covers whatever fell outside that
+     window long-term.
 
 Summary generations go through the same proxy job queue (class "task" —
 auxiliary, never agent-class billing), single-shot, tools disabled.
@@ -31,27 +34,40 @@ async def maybe_compact(agent) -> dict:
     next turn retries compaction."""
     from . import qtree
     msgs = agent.messages
-    if not qtree.needs_compaction(msgs):
+    pt = getattr(agent, "last_prompt_tokens", 0) or 0
+    cw = getattr(agent, "context_window", 0) or 0
+    if not qtree.needs_compaction(msgs, pt, cw):
         return {}
-    # Split off the oldest non-system messages, keeping the newest half of
-    # whichever budget fired (chars or message count — count matters for
-    # short-message sessions that would otherwise hit _sanitize's 200-msg
-    # tail-cap without ever triggering the char path).
     non_sys = [(i, len(m.get("content") or ""))
                for i, m in enumerate(msgs) if m.get("role") != "system"]
-    total = sum(n for _, n in non_sys)
-    budget_keep_chars = qtree.COMPACT_TRIGGER_CHARS // 2
-    budget_keep_msgs = qtree.COMPACT_TRIGGER_MSGS // 2
+    total_chars = sum(n for _, n in non_sys)
     drop_idx: set[int] = set()
-    acc_chars = 0
-    acc_msgs = 0
-    for i, n in non_sys:               # oldest first
-        if (total - acc_chars <= budget_keep_chars
-                and len(non_sys) - acc_msgs <= budget_keep_msgs):
-            break
-        drop_idx.add(i)
-        acc_chars += n
-        acc_msgs += 1
+    if pt and cw and pt > qtree.COMPACT_TRIGGER_WINDOW_FRACTION * cw:
+        # R78 token path: drop OLDEST non-system messages until the
+        # estimated remaining tokens land at <= 25% of the window. The
+        # estimate is by char proportion — est = pt * kept/total — because
+        # token density is roughly uniform and the exact provider-reported
+        # total anchors it (est == pt when nothing is dropped).
+        target = qtree.COMPACT_TARGET_FRACTION * cw
+        acc_chars = 0
+        for i, n in non_sys:               # oldest first
+            if total_chars and pt * (total_chars - acc_chars) / total_chars \
+                    <= target:
+                break
+            if len(non_sys) - len(drop_idx) <= 1:
+                break                      # never drop the newest message
+            drop_idx.add(i)
+            acc_chars += n
+    else:
+        # Backstop path (no usage data yet / message count): the existing
+        # halving — keep the newest COMPACT_TRIGGER_MSGS // 2 messages.
+        budget_keep_msgs = qtree.COMPACT_TRIGGER_MSGS // 2
+        acc_msgs = 0
+        for i, n in non_sys:               # oldest first
+            if len(non_sys) - acc_msgs <= budget_keep_msgs:
+                break
+            drop_idx.add(i)
+            acc_msgs += 1
     if not drop_idx:
         return {}
     # Issue #12: the cut may land mid tool-exchange — extend the drop set
@@ -79,6 +95,10 @@ async def maybe_compact(agent) -> dict:
         return stats
     # summarized OK — only now trim the live context
     agent.messages = kept
+    n_kept = sum(1 for m in kept if m.get("role") != "system")
+    # R78: log the numbers the decision was made on
+    print(f"[qtree] compacted: prompt_tokens={pt} window={cw} "
+          f"msgs={len(non_sys)} -> {n_kept} (dropped {len(drop_idx)})")
     try:
         # R70: the qtree view changed -> regenerate the system prompt so
         # the next generation sees the new entry

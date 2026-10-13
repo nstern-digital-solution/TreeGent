@@ -42,11 +42,13 @@ from .conclusions import CONCLUSION_TEXT_MAX
 
 COMPACT_ENTRY_MAX = 4000      # Felix: max chars per summary entry
 COMPACT_FANOUT = 4            # Felix: 4 entries on a level -> 1 above
-# Felix 2026-10-08: modern models carry ~1M-token windows — compact at
-# 200k-400k tokens. Trigger 1.2M chars (~300k tokens); the oldest half is
-# summarized away each time (~150k tokens removed per compaction).
-COMPACT_TRIGGER_CHARS = 1_200_000
-COMPACT_TRIGGER_MSGS = 400    # count path; below _sanitize's 500-msg ceiling
+# Felix R78 (2026-10-13): "we want to compress at > 50% of the models
+# maximum context window" — the provider-reported usage.prompt_tokens of
+# the last generation is the ONLY real signal; chars and message-count
+# are retired proxies (R70/R73's numbers superseded).
+COMPACT_TRIGGER_WINDOW_FRACTION = 0.5   # Felix R78: compact above 50%
+COMPACT_TARGET_FRACTION = 0.25          # post-compaction landing zone
+COMPACT_TRIGGER_MSGS = 2000             # backstop only (was 400)
 QTREE_DIR = "memory/qtree"
 
 _SUMMARY_PROMPT = """You maintain episodic memory for an autonomous agent. \
@@ -424,13 +426,25 @@ def context_block(workspace: str, budget: int = 200_000) -> str:
     return text
 
 
-def needs_compaction(messages: list[dict]) -> bool:
-    """True when the chatlog needs compacting: either non-system chars
-    exceed COMPACT_TRIGGER_CHARS, or the message COUNT is near the
-    _sanitize tail-cap (short-message sessions would otherwise hit the
-    500-message cap with NO summary — information must never silently
-    leave the context)."""
-    non_sys = [m for m in messages if m.get("role") != "system"]
-    if sum(len(m.get("content") or "") for m in non_sys) > COMPACT_TRIGGER_CHARS:
+def needs_compaction(messages: list[dict], last_prompt_tokens: int | None = None,
+                     context_window: int | None = None) -> bool:
+    """True when the chatlog needs compacting (Felix R78):
+
+    - token trigger: the last generation's provider-reported
+      usage.prompt_tokens EXCEEDS 50% of the model's context window
+      (strictly greater-than; the exact count is the signal — never an
+      estimate); or
+    - backstop: the non-system message COUNT reaches COMPACT_TRIGGER_MSGS
+      (no usage data yet / failure storm). Kept only as a guard — it must
+      fire BEFORE _sanitize's 2500-message tail-cap so information never
+      silently leaves the context.
+
+    The old char trigger (R70/R73) is RETIRED: chars are a proxy whose
+    token density varies with language and content; a 10M-char log of
+    tiny tokens is not over budget and must NOT compact."""
+    if (last_prompt_tokens and context_window
+            and last_prompt_tokens
+            > COMPACT_TRIGGER_WINDOW_FRACTION * context_window):
         return True
+    non_sys = [m for m in messages if m.get("role") != "system"]
     return len(non_sys) >= COMPACT_TRIGGER_MSGS
