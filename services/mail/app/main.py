@@ -3,9 +3,11 @@ services (web/agentd), agent-key auth added with the runtime (M5).
 
 Since R40 every data access goes through the treegent-common permission
 engine — rules are rows in `permissions`, deny-by-default."""
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from treegent_common.auth import authenticate
 from treegent_common.perms import can, principal_for, resource_for
@@ -41,7 +43,11 @@ def mpub(m: dict) -> dict:
             "direction": m["direction"], "from": m.get("from_addr"),
             "to": m.get("to"), "subject": m.get("subject"),
             "text": m.get("text"), "status": m.get("status"),
-            "approval_id": m.get("approval_id"), "ts": m.get("ts")}
+            "approval_id": m.get("approval_id"), "ts": m.get("ts"),
+            # #60: compact attachment METADATA rides the public shape so
+            # the agent SEES what is attached; bytes only via the explicit
+            # download endpoint (notify-only doctrine)
+            "attachments": m.get("attachments") or []}
 
 
 # ---------------- mailboxes ----------------
@@ -111,6 +117,70 @@ async def list_messages(mbx_id: str, limit: int = 50,
             .sort("ts", -1).limit(min(limit, 200)):
         out.append(mpub(m))
     return out
+
+
+# ---------------- attachment download (issue #60) ----------------
+
+@router.get("/mailboxes/{mbx_id}/messages/{msg_id}/attachments/{att_id}")
+async def download_attachment(mbx_id: str, msg_id: str, att_id: str,
+                              _c: dict = Depends(caller_actor)):
+    """Issue #60 (the ruling: NOTIFY-ONLY by default — never store files).
+    Attachment METADATA is persisted at import; BYTES flow only on this
+    explicit request, into whatever the caller does with the stream:
+      1. mailbox scoping (owner personal / member shared — same hard scope
+         as list_messages) BEFORE any message/attachment lookup;
+      2. message must belong to mbx_id, att_id must exist in the STORED
+         metadata (no metadata, no download);
+      3. cap: TG_MAIL_ATTACH_MAX (default 25 MB) enforced at the stored
+         size BEFORE the provider fetch (413) and again while streaming
+         (abort) — metadata can understate;
+      4. fresh signed URL from Resend per request (1h expiry — never
+         stored), bytes streamed through with content-type +
+         content-disposition. Errors are bounded and friendly; remote
+         bodies are never echoed."""
+    mb = await mailboxes.find_one({"_id": mbx_id})
+    if not mb:
+        raise HTTPException(404, "no such mailbox")
+    aid = _c["_id"]
+    if mb["kind"] == "personal" and mb.get("owner") != aid:
+        raise HTTPException(403, "not your mailbox")
+    if mb["kind"] == "shared" and aid not in mb.get("members", []):
+        raise HTTPException(403, "not a member of this mailbox")
+    msg = await mail_messages.find_one({"_id": msg_id})
+    if not msg or msg.get("mailbox_id") != mbx_id:
+        raise HTTPException(404, "no such message")
+    meta = next((a for a in (msg.get("attachments") or [])
+                 if a.get("id") == att_id), None)
+    if not meta:
+        raise HTTPException(404, "no such attachment on this message")
+    cap = settings.attach_max
+    size = int(meta.get("size") or 0)
+    if size > cap:
+        raise HTTPException(
+            413, f"attachment too large ({size} bytes; cap is {cap} bytes, "
+                 f"TG_MAIL_ATTACH_MAX)")
+    if not (msg.get("resend_id") or ""):
+        raise HTTPException(404, "attachment bytes unavailable for this "
+                                 "message (not a provider-delivered mail)")
+    try:
+        signed = await adapters.fetch_attachment_url(msg["resend_id"], att_id)
+    except Exception as e:  # noqa: BLE001 — bounded, never echo remote body
+        raise HTTPException(
+            502, f"could not get a download link from the mail provider "
+                 f"({type(e).__name__})") from e
+    url = (signed or {}).get("download_url") or ""
+    if not url:
+        raise HTTPException(502, "mail provider returned no download link")
+
+    async def body():
+        async for chunk in adapters.iter_attachment_bytes(url, cap):
+            yield chunk
+
+    filename = re.sub(r'["\\\r\n]', "_", str(meta.get("filename") or "attachment"))
+    return StreamingResponse(
+        body(),
+        media_type=str(meta.get("content_type") or "application/octet-stream"),
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 # ---------------- outbound send (approval-gated) ----------------

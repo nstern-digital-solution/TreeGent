@@ -30,6 +30,42 @@ def parse_ts(value) -> datetime:
         return now()
 
 
+# ---- issue #60: attachment METADATA only (the ruling: never store bytes;
+# no default storage at all — the agent is TOLD files exist and decides) ----
+
+def compact_attachments(raw) -> list[dict]:
+    """Resend attachments[] -> the compact stored shape
+    [{id, filename, content_type, size}]. Strips content_disposition,
+    content_id and anything else; bytes and download_url NEVER persist
+    (the signed URL expires in 1h — it is fetched fresh per request)."""
+    out = []
+    for a in (raw or []):
+        if not isinstance(a, dict) or not a.get("id"):
+            continue
+        out.append({"id": str(a["id"]),
+                    "filename": str(a.get("filename") or ""),
+                    "content_type": str(a.get("content_type")
+                                        or "application/octet-stream"),
+                    "size": int(a.get("size") or 0)})
+    return out
+
+
+def wake_detail(from_addr: str, attachments) -> str:
+    """Pull-wake detail string; mails WITH attachments append
+    '(N attachments)' (issue #60) so the agent knows to look before
+    calling mail.read."""
+    d = f"new mail from {from_addr}"
+    n = len(attachments or [])
+    if n:
+        d += f" ({n} attachments)"
+    return d
+
+
+class AttachmentError(Exception):
+    """Bounded provider-side attachment failure — message is already
+    friendly; never carries remote body bytes."""
+
+
 # Cloudflare sits in front of api.resend.com and blanket-bans the default
 # Python User-Agent with 403 "error code: 1010" (browser-signature rule) —
 # the ban fires BEFORE auth, so no key change can ever fix it. Every request
@@ -62,6 +98,47 @@ async def fetch_received_email(email_id: str) -> dict:
     body path — /emails/{id}/received does not exist) — returns
     {text, html, headers, ...}. Uses the same RESEND_API_KEY as outbound."""
     return await asyncio.to_thread(_fetch_received_email_sync, email_id)
+
+
+def _fetch_attachment_url_sync(email_id: str, att_id: str) -> dict:
+    """Blocking urllib call — ONLY ever run via asyncio.to_thread (R68).
+    Resend: GET /emails/receiving/{email_id}/attachments/{att_id} ->
+    {download_url, expires_at} (fresh signed URL, ~1h expiry — never
+    stored, fetched per request)."""
+    key = env_fallback("RESEND_API_KEY")
+    if not key:
+        raise RuntimeError("RESEND_API_KEY not set in environment")
+    base = env_fallback("TG_RESEND_API_BASE") or "https://api.resend.com"
+    req = urllib.request.Request(
+        f"{base}/emails/receiving/{email_id}/attachments/{att_id}",
+        headers={"Authorization": f"Bearer {key}", "User-Agent": _UA})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode())
+
+
+async def fetch_attachment_url(email_id: str, att_id: str) -> dict:
+    """Fresh signed download URL for one stored attachment id (issue #60)."""
+    return await asyncio.to_thread(_fetch_attachment_url_sync, email_id, att_id)
+
+
+async def iter_attachment_bytes(url: str, max_bytes: int):
+    """Yield the attachment bytes behind a signed download_url (no auth
+    needed), server-side. Enforces the cap WHILE streaming: a transfer
+    over max_bytes aborts (AttachmentError) instead of completing —
+    the metadata size check happens before this, this catches liars."""
+    total = 0
+    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as c:
+        async with c.stream("GET", url) as r:
+            if r.status_code != 200:
+                raise AttachmentError(
+                    f"provider download failed (HTTP {r.status_code})")
+            async for chunk in r.aiter_bytes():
+                total += len(chunk)
+                if total > max_bytes:
+                    raise AttachmentError(
+                        f"attachment exceeds the {max_bytes}-byte cap "
+                        "mid-transfer")
+                yield chunk
 
 
 def _send_resend_sync(payload: dict, idempotency_key: str = "") -> dict:
@@ -206,27 +283,46 @@ async def _heal_bodies() -> int:
     """#26: retry the body of rows imported without one (Resend body
     hiccup). body_attempts caps the retries so a permanently bodyless row
     is not re-fetched on every read forever; a body that finally arrives
-    WAKES the mailbox's agents (healed-then-wake)."""
+    WAKES the mailbox's agents (healed-then-wake).
+    Issue #60: the same sweep also backfills attachment METADATA for rows
+    imported before it existed (query extended to `attachments` missing) —
+    metadata only, never bytes; bounded by the same body_attempts cap.
+    A metadata-only backfill never wakes (the mail was already readable —
+    re-waking would replay #45's duplicate-wake bug class)."""
     healed = 0
     q = {"direction": "in", "resend_id": {"$exists": True, "$ne": ""},
-         "$and": [{"text": {"$in": [None, ""]}},
+         "$and": [{"$or": [{"text": {"$in": [None, ""]}},
+                           {"attachments": {"$exists": False}}]},
                   {"$or": [{"body_attempts": {"$exists": False}},
                            {"body_attempts": {"$lt": BODY_ATTEMPTS_CAP}}]}]}
     async for row in mail_messages.find(q).sort("ts", 1).limit(HEAL_BATCH):
-        text = ""
+        fetched = None
         try:
             fetched = await fetch_received_email(row["resend_id"])
-            text = fetched.get("text") or ""
         except Exception:  # noqa: BLE001 — metadata-only beats dropping
             pass
-        if (text or "").strip():
+        text = (fetched or {}).get("text") or ""
+        body_healed = (not (row.get("text") or "").strip()
+                       and bool((text or "").strip()))
+        set_doc: dict = {}
+        if body_healed:
+            set_doc["text"] = text
+        if fetched is not None and "attachments" not in row:
+            # #60: retrieve payload carries attachments[] too — compact
+            # metadata for rows imported before the field existed
+            set_doc["attachments"] = compact_attachments(
+                fetched.get("attachments"))
+        if set_doc:
             await mail_messages.update_one({"_id": row["_id"]},
-                                           {"$set": {"text": text}})
+                                           {"$set": set_doc})
             healed += 1
+        if body_healed:
             mb = await db.mailboxes.find_one({"_id": row["mailbox_id"]})
             if mb:
                 await _wake_pull(row["resend_id"], mb,
-                                 f"new mail from {row.get('from_addr')}")
+                                 wake_detail(row.get("from_addr"),
+                                             set_doc.get("attachments",
+                                                         row.get("attachments"))))
         else:
             await mail_messages.update_one(
                 {"_id": row["_id"]}, {"$inc": {"body_attempts": 1}})
@@ -285,6 +381,7 @@ async def sync_inbound(addresses: list[str] | None = None) -> dict:
                 to_list = dict.fromkeys(
                     (t or "").strip().lower() for t in (m.get("to") or []))
                 text = None        # provider body: fetched lazily, once
+                atts = compact_attachments(m.get("attachments"))  # #60
                 for to_addr in to_list:
                     if not to_addr or (addresses and to_addr not in addresses):
                         continue
@@ -308,7 +405,12 @@ async def sync_inbound(addresses: list[str] | None = None) -> dict:
                     r = await ingest_inbound(to_addr, m.get("from") or "",
                                              m.get("subject") or "", text=text,
                                              wake=False, resend_id=m["id"],
-                                             received_at=m.get("created_at"))
+                                             received_at=m.get("created_at"),
+                                             # #60: the LIST payload already
+                                             # carries attachments[] — store
+                                             # the compact METADATA at import
+                                             # (never bytes / download_url)
+                                             attachments=atts)
                     if r.get("delivered"):
                         imported += 1
                         # R69 fix: pull-discovery wakes the recipient agents
@@ -323,7 +425,7 @@ async def sync_inbound(addresses: list[str] | None = None) -> dict:
                         # the same mail differently and healed bodies re-woke
                         # agents for mail they already had.
                         await _wake_pull(m["id"], mb,
-                                         f"new mail from {m.get('from')}")
+                                         wake_detail(m.get("from"), atts))
                     else:
                         failed += 1
             if stop or not page.get("has_more"):
@@ -344,11 +446,15 @@ async def sync_inbound(addresses: list[str] | None = None) -> dict:
 async def ingest_inbound(address: str, from_addr: str, subject: str,
                          text: str = "", html: str = "",
                          wake: bool = True, resend_id: str = "",
-                         received_at: str = "") -> dict:
+                         received_at: str = "",
+                         attachments: list | None = None) -> dict:
     """Route one inbound email into its mailbox. Pull-sync (R67) or the dev
     simulate hook. Shared mailbox used to wake every member (R35) — wakes
     only happen for pushed mail, which no longer exists in prod (R67);
-    the dev hook still wakes."""
+    the dev hook still wakes.
+    Issue #60: `attachments` (the provider's attachments[]) is persisted as
+    compact METADATA on every inbound row — empty list when the mail has
+    none; NEVER bytes, NEVER download_url."""
     mb = await db.mailboxes.find_one({"address": address})
     if not mb:
         return {"delivered": False, "reason": f"no mailbox {address!r}"}
@@ -383,6 +489,10 @@ async def ingest_inbound(address: str, from_addr: str, subject: str,
         # R68: ts (datetime, sorted by listings) alongside the raw
         # received_at string — imported mail used to have no ts at all
         "ts": parse_ts(received_at) if received_at else now(),
+        # #60: compact attachment METADATA on EVERY inbound row ([] when
+        # none) — 'attachments missing' is how the heal sweep finds rows
+        # imported before this field existed
+        "attachments": compact_attachments(attachments),
         **({"resend_id": resend_id} if resend_id else {}),
     }
     await mail_messages.insert_one(msg)
