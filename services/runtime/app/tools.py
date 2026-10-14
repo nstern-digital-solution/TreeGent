@@ -274,11 +274,35 @@ async def t_mail_send(ctx: ToolContext, args: dict) -> str:
             f"(approver decides; status via mail.check)")
 
 
+# #68: body budget contract for mail.read
+_BODY_MAX = 500            # default overview budget (cheap listing)
+_BODY_HARD_CAP = 20_000    # single-mail ceiling: 20k chars ~ 5k tokens
+
+
+def _body_budget(args: dict) -> int:
+    """body=<int> = char budget for THIS read; body='full' = the hard cap.
+    Unparsable values fall back to the default (never error the whole read
+    over a bad argument)."""
+    raw = args.get("body")
+    if raw is None:
+        return _BODY_MAX
+    if isinstance(raw, str) and raw.strip().lower() == "full":
+        return _BODY_HARD_CAP
+    try:
+        return max(1, min(int(raw), _BODY_HARD_CAP))
+    except (TypeError, ValueError):
+        return _BODY_MAX
+
+
 async def t_mail_read(ctx: ToolContext, args: dict) -> str:
     """Read your mail. mail.read with no args = your own mailbox overview
     (address + latest messages). Optional: mailbox=<shared address you are
-    a member of>, limit=<int>, unread_only=<bool>. Also answers 'what is
-    my email address' — the overview lists it."""
+    a member of>, limit=<int>, unread_only=<bool>, body=<int|'full'>.
+    Also answers 'what is my email address' — the overview lists it.
+
+    #68: bodies are budgeted, never silently truncated — the default shows
+    the first 500 chars and, when more exists, an explicit marker with the
+    full size and how to read the rest (body=full or a char budget)."""
     from urllib.parse import quote
     params: dict = {"limit": str(max(1, min(int(args.get("limit", 10)), 50)))}
     # 1) which mailboxes can I read?
@@ -323,9 +347,21 @@ async def t_mail_read(ctx: ToolContext, args: dict) -> str:
                      f"({_fmt_size(a.get('size'))}, "
                      f"{a.get('content_type') or 'application/octet-stream'})")
         lines.append(line)
-        body = (m.get("text") or "")[:500]
-        if body:
-            lines.append(f"    {body}")
+        # #68: honest budget — a truncated body MUST say so, with the
+        # exact size and the continuation handle; silent truncation made
+        # agents act on fragments believing they'd read the whole mail
+        full = m.get("text") or ""
+        budget = _body_budget(args)
+        shown = full[:budget]
+        if shown:
+            lines.append(f"    {shown}")
+        if len(full) > budget:
+            # at the hard cap the whole mail is already shown once more;
+            # the numeric handle tells the agent exactly what remains
+            how = "body=full" if budget < _BODY_HARD_CAP else \
+                  f"body={len(full)}"
+            lines.append(f"    …[truncated: {budget} of {len(full)} chars "
+                         f"— re-read with {how}]")
     if len(lines) == 1:
         lines.append("(no messages)")
     return "\n".join(lines)
