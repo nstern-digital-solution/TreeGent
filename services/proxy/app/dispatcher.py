@@ -329,15 +329,30 @@ def _default_context_window() -> int:
     return 32768
 
 async def context_window_for(model_id: str) -> int:
-    """R78: the served model's catalog context_window, default fallback
-    when the entry has none. Total — never raises."""
+    """R78: the served model's context window, default fallback when the
+    entry has none. Total — never raises.
+
+    #69: two fields feed this lookup, deliberately ranked —
+      1. `context_window`: the ADMIN-set override (PATCH /admin/providers/
+         models). Manual wins; a refresh never stomps it.
+      2. `ctx`: the PROVIDER-reported window the catalog refresh writes
+         from the /models listing (context_length). Before #69 the lookup
+         read ONLY `context_window`, so a completed refresh preseeded
+         nothing and every model silently fell back to the 32768 default —
+         compaction fired ~4x too often on big-window models (and the 25%
+         target dropped below prompt overhead, making it unreachable).
+    """
     global _ctx_windows, _ctx_loaded_at
     try:
         stale = time.monotonic() - _ctx_loaded_at > _CTX_CACHE_TTL_S
         if stale or model_id not in _ctx_windows:
             m = {}
-            async for row in db.model_catalog.find({}, {"context_window": 1}):
-                m[row["_id"]] = row.get("context_window")
+            async for row in db.model_catalog.find(
+                    {}, {"context_window": 1, "ctx": 1}):
+                w = row.get("context_window")
+                if not (isinstance(w, int) and w > 0):
+                    w = row.get("ctx")           # provider-reported preseed
+                m[row["_id"]] = w
             _ctx_windows = m
             _ctx_loaded_at = time.monotonic()
         w = _ctx_windows.get(model_id)
