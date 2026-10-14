@@ -23,3 +23,5 @@ deploy/.caddy-lab
 browser-profile/
 
 *.egg-info/
+build/
+dist/
