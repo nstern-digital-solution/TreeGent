@@ -27,6 +27,26 @@ if [ -z "${TG_SERVICE_TOKEN:-}" ] && [ "${TG_DEV:-}" != "1" ]; then
   echo "       TG_DEV=1 explicitly for a development machine."
   exit 1
 fi
+# C1 fail-closed (audit #64): the central runtime must never run with exec
+# enabled — an agent with exec on this box can read the process env (service
+# token, Mongo URL) and impersonate any actor. Agent hosts provision their
+# OWN runtime with exec (hostprovision writes TG_RUNTIME_EXEC_ENABLED=true);
+# this supervisor runs the central stack, where exec is refused outright
+# outside an explicit development machine (TG_DEV=1).
+EXEC_FLAG="${TG_RUNTIME_EXEC_ENABLED:-}"
+if [ -z "$EXEC_FLAG" ] && [ -f "$REPO/.env" ]; then
+  EXEC_FLAG="$(grep -m1 '^TG_RUNTIME_EXEC_ENABLED=' "$REPO/.env" | cut -d= -f2- || true)"
+fi
+case "${EXEC_FLAG,,}" in
+  1|true|yes|on)
+    if [ "${TG_DEV:-}" != "1" ]; then
+      echo "ERROR: TG_RUNTIME_EXEC_ENABLED=$EXEC_FLAG on the central host — refusing to start."
+      echo "       Command execution on the central box leaks the service token to any agent"
+      echo "       with exec. Set TG_RUNTIME_EXEC_ENABLED=false in .env / /etc/treegent/env,"
+      echo "       or export TG_DEV=1 explicitly for a development machine."
+      exit 1
+    fi ;;
+esac
 
 now() { date +%s; }
 

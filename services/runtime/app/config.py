@@ -34,7 +34,11 @@ class Settings(BaseSettings):
     heartbeat_s: int = 3600            # R44: default 60 min, per-agent override
     exec_timeout_s: int = 600          # R46: foreground cap 10 min
     exec_user: str = ""                 # R46: separate linux user; sudo -n -u
-    exec_enabled: bool = True            # R48: False on reserved hosts
+    # C1 (audit #64): FAIL-CLOSED default — command execution is an explicit
+    # per-host opt-in. R48's reserved-host escape stays env-gated
+    # (TG_RUNTIME_EXEC_ENABLED=false anywhere); provisioned agent hosts get
+    # the explicit true from hostprovision (their runtime.env keeps working).
+    exec_enabled: bool = False
     host_id: str = Field(default="",
                       validation_alias=AliasChoices("TG_RUNTIME_HOST_ID", "TG_HOST_ID"))
     # R56: per-host secret from provisioning; presence = hosted (no-Mongo) mode
@@ -62,6 +66,23 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# R62 fail-closed: refuse insecure shared credentials at boot
+# (H3, audit #64: the runtime was the one service without this guard —
+# the env.example placeholder / dev default must never authorize it).
+# Review #66 (option a): an EMPTY token is exempted for hosted runtimes
+# (TG_RUNTIME_HOST_KEY set) — those never send the service header at all
+# (R56: hosted = host-key identity only), so the guard protects nothing
+# there while a hard refusal would turn a pre-R46 env into a boot outage.
+# Placeholder/dev values are denied EVERYWHERE; empty is denied on the
+# central path (no host key = the daemon's /internal API is live and
+# must not be open).
+from treegent_common.security import assert_secure_service_token  # noqa: E402
+if settings.host_key:
+    if settings.service_token:
+        assert_secure_service_token(settings.service_token, "runtime")
+else:
+    assert_secure_service_token(settings.service_token, "runtime")
 
 # R56: hosted runtimes (host_key set) NEVER touch Mongo — no credential on
 # the box. The client handle exists only for the central runtime path.

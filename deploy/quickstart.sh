@@ -180,6 +180,9 @@ set_kv() { grep -q "^$1=" "$TOKEN_FILE" \
   && sed -i "s|^$1=.*|$1=$2|" "$TOKEN_FILE" \
   || echo "$1=$2" >> "$TOKEN_FILE"; }   # append-if-missing: sed alone no-ops on absent lines
 set_kv TG_SERVICE_TOKEN "$TG_SERVICE_TOKEN"
+# C1 (audit #64): the central host NEVER runs the runtime with exec — write
+# the explicit off (matches the fail-closed config default; R48).
+set_kv TG_RUNTIME_EXEC_ENABLED "false"
 [ -n "${TG_MONGO_URL:-}" ] && set_kv TG_MONGO_URL "$TG_MONGO_URL"
 # kill the legacy localhost default that shadowed TG_MONGO_URL for web
 set_kv TG_WEB_MONGO_URL ""

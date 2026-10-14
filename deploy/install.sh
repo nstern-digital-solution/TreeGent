@@ -77,6 +77,15 @@ if [ ! -f "$KEYS_KEY" ]; then
   echo "generated $KEYS_KEY (back this up)"
 fi
 grep -q '^TG_PROXY_KEYFILE=' "$ENV_FILE" && sed -i "s|^TG_PROXY_KEYFILE=.*|TG_PROXY_KEYFILE=$KEYS_KEY|" "$ENV_FILE" || echo "TG_PROXY_KEYFILE=$KEYS_KEY" >> "$ENV_FILE"
+# C1 (audit #64): explicit exec polarity per host role (config default is now
+# fail-closed off). The central host NEVER runs the runtime with exec; the
+# --agent-host path provisions WITH exec (tgexec + sudoers below) and must
+# keep it across reinstalls (hosts provisioned WITH exec keep exec).
+if [ "$AGENT_HOST" = "--agent-host" ]; then
+  grep -q '^TG_RUNTIME_EXEC_ENABLED=' "$ENV_FILE" && sed -i "s|^TG_RUNTIME_EXEC_ENABLED=.*|TG_RUNTIME_EXEC_ENABLED=true|" "$ENV_FILE" || echo "TG_RUNTIME_EXEC_ENABLED=true" >> "$ENV_FILE"
+else
+  grep -q '^TG_RUNTIME_EXEC_ENABLED=' "$ENV_FILE" && sed -i "s|^TG_RUNTIME_EXEC_ENABLED=.*|TG_RUNTIME_EXEC_ENABLED=false|" "$ENV_FILE" || echo "TG_RUNTIME_EXEC_ENABLED=false" >> "$ENV_FILE"
+fi
 install -m 640 -o "$SYSUSER" -g "$SYSUSER" "$ENV_FILE" "$ENV_DIR/env"
 
 # 5) runtime user for exec on agent hosts (R46)

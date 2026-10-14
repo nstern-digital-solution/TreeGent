@@ -552,12 +552,50 @@ async def t_files_push(ctx: ToolContext, args: dict) -> str:
     return f"pushed {frm} -> {r.get('path') or to_path} ({size} bytes)"
 
 
+def _exec_env(workspace: str) -> dict:
+    """C1 (audit #64): the WHITELISTED environment for exec'd commands.
+
+    The daemon env holds TG_* service tokens, the Mongo URL and provider
+    keys — an agent with exec must never inherit it (any exec on the
+    central box could then impersonate any actor). Only these keys cross
+    the boundary: PATH (inherited — shells need it), HOME (the exec
+    user's home when determinable, else /tmp), LANG/LC_ALL pinned to
+    C.UTF-8, and TMPDIR pointing at a workspace-local tmp dir so children
+    get a writable temp without inheriting a TMPDIR secret. NOTHING else,
+    ever."""
+    tmpdir = os.path.join(workspace, ".tg-exec", "tmp")
+    os.makedirs(tmpdir, exist_ok=True)
+    try:
+        # like /tmp: the exec user is a different uid (R46) and must be
+        # able to drop temp files here; sticky keeps other users' out
+        os.chmod(tmpdir, 0o1777)
+    except OSError:
+        pass
+    home = "/tmp"
+    try:
+        import pwd
+        pw = pwd.getpwnam(settings.exec_user) if settings.exec_user \
+            else pwd.getpwuid(os.getuid())
+        home = pw.pw_dir or "/tmp"
+    except (ImportError, KeyError):
+        home = "/tmp"
+    return {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": home,
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TMPDIR": tmpdir,
+    }
+
+
 async def t_exec(ctx: ToolContext, args: dict) -> str:
     """Run a shell command in the agent workspace.
     foreground (default): killed after settings.exec_timeout_s (R46: 10 min).
     background=true: detached, NO timeout (R46) — output lands in
     .tg-exec/<id>.log inside the workspace, read it with ws.read.
-    Runs as the configured exec user when one exists (R46 separate user)."""
+    Runs as the configured exec user when one exists (R46 separate user).
+    C1 (audit #64): the child gets a WHITELISTED env (see _exec_env) —
+    never the daemon's, which holds service tokens and the Mongo URL."""
     if not settings.exec_enabled:
         return ("ERROR: exec is disabled on this host (reserved "
                 "machine, R48) — command execution requires a dedicated "
@@ -582,13 +620,14 @@ async def t_exec(ctx: ToolContext, args: dict) -> str:
             subprocess.Popen(cmd, shell=True, cwd=ctx.workspace,
                              stdout=logf, stderr=subprocess.STDOUT,
                              stdin=subprocess.DEVNULL,
+                             env=_exec_env(ctx.workspace),
                              start_new_session=True)
         return (f"background job {log_id} started (no timeout); "
                 f"output -> .tg-exec/{log_id}.log")
     proc = await asyncio.create_subprocess_shell(
         cmd, cwd=ctx.workspace,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        stdin=asyncio.subprocess.DEVNULL)
+        stdin=asyncio.subprocess.DEVNULL, env=_exec_env(ctx.workspace))
     try:
         out, _ = await asyncio.wait_for(proc.communicate(),
                                         timeout=settings.exec_timeout_s)
