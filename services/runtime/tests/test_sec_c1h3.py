@@ -237,3 +237,46 @@ def test_c1_deploy_scripts_write_explicit_off():
         p = subprocess.run(["bash", "-n", os.path.join(REPO, "deploy", name)],
                            capture_output=True, text=True)
         assert p.returncode == 0, f"{name} does not parse: {p.stderr}"
+
+
+# ---------------- review #66: hosted empty-token boot exemption ----------
+
+def test_h3_hosted_empty_token_boots(monkeypatch, tmp_path):
+    """Rosa's option (a): a hosted runtime (host key set) with NO service
+    token must boot — it never sends the header (R56), the guard protects
+    nothing there, and refusing turns a pre-R46 env into an outage."""
+    import importlib, subprocess, sys, textwrap
+    code = textwrap.dedent("""
+        import os
+        os.environ["TG_RUNTIME_HOST_KEY"] = "hk_test_123"
+        for k in ("TG_RUNTIME_SERVICE_TOKEN", "TG_SERVICE_TOKEN", "TG_DEV"):
+            os.environ.pop(k, None)
+        import services.runtime.app.config  # noqa: F401
+        print("BOOT-OK")
+    """)
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                       text=True, cwd=os.path.dirname(
+                           os.path.dirname(os.path.dirname(
+                               os.path.dirname(os.path.abspath(__file__))))))
+    assert "BOOT-OK" in r.stdout, r.stderr[-400:]
+
+
+def test_h3_hosted_placeholder_token_still_refused():
+    """The exemption is EMPTY-only: a hosted runtime carrying the env.example
+    placeholder still refuses (a known public header value must never
+    authorize /internal, hosted or not)."""
+    import subprocess, sys, textwrap
+    code = textwrap.dedent("""
+        import os
+        os.environ["TG_RUNTIME_HOST_KEY"] = "hk_test_123"
+        os.environ["TG_SERVICE_TOKEN"] = "change-me-random"
+        os.environ.pop("TG_DEV", None)
+        import services.runtime.app.config  # noqa: F401
+        print("BOOT-OK")
+    """)
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                       text=True, cwd=os.path.dirname(
+                           os.path.dirname(os.path.dirname(
+                               os.path.dirname(os.path.abspath(__file__))))))
+    assert "BOOT-OK" not in r.stdout
+    assert "refusing to start" in (r.stderr or r.stdout)

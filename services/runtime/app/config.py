@@ -70,8 +70,19 @@ settings = Settings()
 # R62 fail-closed: refuse insecure shared credentials at boot
 # (H3, audit #64: the runtime was the one service without this guard —
 # the env.example placeholder / dev default must never authorize it).
+# Review #66 (option a): an EMPTY token is exempted for hosted runtimes
+# (TG_RUNTIME_HOST_KEY set) — those never send the service header at all
+# (R56: hosted = host-key identity only), so the guard protects nothing
+# there while a hard refusal would turn a pre-R46 env into a boot outage.
+# Placeholder/dev values are denied EVERYWHERE; empty is denied on the
+# central path (no host key = the daemon's /internal API is live and
+# must not be open).
 from treegent_common.security import assert_secure_service_token  # noqa: E402
-assert_secure_service_token(settings.service_token, "runtime")
+if settings.host_key:
+    if settings.service_token:
+        assert_secure_service_token(settings.service_token, "runtime")
+else:
+    assert_secure_service_token(settings.service_token, "runtime")
 
 # R56: hosted runtimes (host_key set) NEVER touch Mongo — no credential on
 # the box. The client handle exists only for the central runtime path.
