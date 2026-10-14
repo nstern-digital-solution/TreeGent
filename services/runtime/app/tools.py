@@ -153,6 +153,32 @@ def _fetch_url_allowed(url: str) -> str | None:
     return None
 
 
+def _nav_url_allowed(url: str) -> tuple[bool, str]:
+    """H4: per-navigation SSRF re-validation — (allowed, reason). Same
+    deny-list as _url_allowed (unchanged), applied to EVERY navigation the
+    browser makes: the explicit open, redirect hops Chromium follows
+    INTERNALLY (the framenavigated hook sees only the post-redirect URL),
+    and click-driven navigations. about:blank is the browser's neutral
+    state and performs no fetch, so it passes; everything else must be
+    http(s) and resolve to public space only (fail closed)."""
+    if url.startswith("about:blank"):
+        return True, ""
+    try:
+        parts = urlsplit(url)
+        scheme = (parts.scheme or "").lower()
+        host = parts.hostname
+    except ValueError:
+        return False, "malformed URL"
+    if scheme not in ("http", "https"):
+        return False, "only http(s) URLs are allowed"
+    if not host:
+        return False, "URL has no host"
+    if not _url_allowed(host):
+        return False, (f"{host} resolves inside loopback/link-local/private "
+                       f"space")
+    return True, ""
+
+
 # ---------------- tool implementations ----------------
 
 class ToolContext:
@@ -758,9 +784,85 @@ def _browser_shutdown() -> None:
 atexit.register(_browser_shutdown)
 
 
-def _browser_state(page) -> str:
+# H4: per-navigation SSRF re-validation. The initial-URL check alone let a
+# permitted page redirect (or a clicked link) into loopback/private space —
+# Chromium follows redirects INTERNALLY and click navigations never touch the
+# tool-side check. Probe-verified: framenavigated fires once per committed
+# navigation, carrying the POST-redirect URL, and frame wrappers are
+# identity-stable (frame is page.main_frame holds in the handler).
+BROWSER_NAV_URL_CAP = 200             # bounded blocked-URL in error messages
+
+
+def _nav_blank(page) -> None:
+    """Blank the page so no disallowed content reaches a tool result.
+    Best-effort, never raises. NOTE: a goto issued from inside a
+    framenavigated handler is only QUEUED by the sync Playwright API and
+    lands on a later event pump — the deterministic blank must happen on
+    the main flow (here via _browser_state / the post-goto check)."""
+    try:
+        page.goto("about:blank")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _nav_block(state: dict, page, url: str) -> None:
+    """Record the bounded 'navigation blocked' error in the browser state
+    and blank the page. Never raises."""
+    try:
+        state["nav_blocked"] = (f"navigation blocked: "
+                                f"{url[:BROWSER_NAV_URL_CAP]} not allowed")
+    except Exception:  # noqa: BLE001
+        pass
+    _nav_blank(page)
+
+
+def _install_nav_guard(page, state: dict) -> None:
+    """Register the main-frame framenavigated hook: every committed
+    navigation (redirect hops, click-driven, whatever) is re-validated
+    against the SSRF deny-list. A disallowed URL is recorded in the browser
+    state and the page is blanked. The handler NEVER raises into Playwright
+    internals — everything is caught."""
+    def on_frame_navigated(frame) -> None:
+        try:
+            try:
+                main = (frame is getattr(page, "main_frame", None)
+                        or getattr(frame, "parent_frame", None) is None)
+            except Exception:  # noqa: BLE001 — ambiguous -> enforce (fail closed)
+                main = True
+            if not main:
+                return                      # main frame only
+            url = getattr(frame, "url", "") or ""
+            ok, _reason = _nav_url_allowed(url)
+            if ok:
+                if url.startswith(("http://", "https://")):
+                    state.pop("nav_blocked", None)   # real page -> retire error
+                return
+            _nav_block(state, page, url)
+        except Exception:  # noqa: BLE001 — never throw into Playwright
+            pass
+    try:
+        page.on("framenavigated", on_frame_navigated)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _browser_state(page, state: dict | None = None) -> str:
     """Small state dump after an action: where we are + readable text.
-    A broken session must surface as ERROR — never '(empty page)'."""
+    A broken session must surface as ERROR — never '(empty page)'.
+    H4: while a navigation is blocked, blank the page FIRST (the hook's own
+    goto is queued, not immediate) so no disallowed content leaks into the
+    result, and surface the bounded error above the dump."""
+    if state and state.get("nav_blocked"):
+        _nav_blank(page)
+        try:
+            title = page.title()
+            text = page.locator("body").inner_text(timeout=5000)
+            text = re.sub(r"\n{3,}", "\n\n", text).strip()[:BROWSER_TEXT_CAP]
+            url_line = page.url
+        except Exception:  # noqa: BLE001 — the ERROR line is the payload
+            title, text, url_line = "", "", "(blanked)"
+        return (f"ERROR: {state['nav_blocked']}\n\n"
+                f"url: {url_line}\ntitle: {title}\n\n{text or '(empty page)'}")
     title = page.title()
     text = page.locator("body").inner_text(timeout=5000)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()[:BROWSER_TEXT_CAP]
@@ -792,7 +894,9 @@ def _browser_open(workspace: str) -> dict:
     bctx.set_default_timeout(BROWSER_TIMEOUT_MS)
     bctx.set_default_navigation_timeout(BROWSER_TIMEOUT_MS)
     page = bctx.pages[0] if bctx.pages else bctx.new_page()
-    return {"pw": pw, "ctx": bctx, "page": page}
+    state = {"pw": pw, "ctx": bctx, "page": page}
+    _install_nav_guard(page, state)   # H4: re-validate every navigation
+    return state
 
 
 def _sync_browser_action(workspace: str, action: str, args: dict) -> str:
@@ -817,17 +921,24 @@ def _sync_browser_action(workspace: str, action: str, args: dict) -> str:
         state["last_used"] = time.monotonic()
         page = state["page"]
 
-        if action == "open":
-            url = args.get("url") or ""
+        url = args.get("url") or ""
+        if action == "open" or url:
+            # R68 + H4: SSRF guard BEFORE any action carrying a URL
             if not re.match(r"^https?://", url):
                 return "ERROR: http(s) URL required"
             err = _fetch_url_allowed(url)   # R68: SSRF guard before goto
             if err:
                 return err
+        if action == "open":
             page.goto(url, wait_until="load")
-            return _browser_state(page)
+            # H4 belt+suspenders: goto follows redirects INTERNALLY — the
+            # FINAL url must pass the same check even if the hook missed it
+            ok, _reason = _nav_url_allowed(page.url)
+            if not ok:
+                _nav_block(state, page, page.url)
+            return _browser_state(page, state)
         if action == "text":
-            return _browser_state(page)
+            return _browser_state(page, state)
         if action == "click":
             sel = args.get("selector") or ""
             if not sel:
@@ -837,7 +948,7 @@ def _sync_browser_action(workspace: str, action: str, args: dict) -> str:
                 page.wait_for_load_state("load", timeout=5000)
             except Exception:  # noqa: BLE001 — SPA clicks never fire load
                 pass
-            return _browser_state(page)
+            return _browser_state(page, state)
         if action == "type":
             sel = args.get("selector") or ""
             if not sel:
@@ -853,11 +964,13 @@ def _sync_browser_action(workspace: str, action: str, args: dict) -> str:
             except Exception:  # noqa: BLE001 — some fields resist click/clear
                 pass
             page.type(sel, str(args["text"]))
-            return _browser_state(page)
+            return _browser_state(page, state)
         if action == "screenshot":
             rel = args.get("path") or "screenshot.png"
             abs_p = safe_ws_path(workspace, rel)
             os.makedirs(os.path.dirname(abs_p) or workspace, exist_ok=True)
+            if state.get("nav_blocked"):
+                _nav_blank(page)   # H4: never snapshot a disallowed page
             page.screenshot(path=abs_p, full_page=True)
             return (f"saved {rel} ({os.path.getsize(abs_p)} bytes) "
                     f"in workspace")
@@ -883,9 +996,10 @@ async def t_browser(ctx: ToolContext, args: dict) -> str:
     if action not in ("open", "text", "click", "type", "screenshot", "close"):
         return (f"ERROR: need 'action' = open | text | click | type | "
                 f"screenshot | close; got {action!r}")
-    if action == "open":
-        # R68: deny BEFORE the browser even launches (the sync path would
-        # spin up Chromium first and only then validate)
+    if action == "open" or args.get("url"):
+        # R68 + H4: deny BEFORE the browser even launches (the sync path
+        # would spin up Chromium first and only then validate) — and for
+        # EVERY action carrying a URL, not just open
         err = _fetch_url_allowed(args.get("url") or "")
         if err:
             return err
