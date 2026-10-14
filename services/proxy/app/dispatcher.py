@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
@@ -464,6 +465,135 @@ async def worker_loop():
             await asyncio.sleep(1)
 
 
+# ---------------- window fallback registry (metadata-poor providers) -------
+#
+# Some gateways publish NO model metadata. opencode's model list returns 85
+# rows of {id, object, created, owned_by} — no context_length, no architecture
+# — so refresh_catalog stores ctx = null for every one of them,
+# context_window_for falls through to the 32768 default, and the dashboard
+# shows "-" for every Context cell. 32768 is not merely "a small window": it
+# puts the R78 compaction trigger at 16,384 prompt tokens and the trim target
+# at 8,192 — BELOW an agent's fixed prompt overhead (system prompt + tool
+# schemas, measured ~13,700 tokens), so the target is unreachable and long
+# sessions re-compact turn after turn. Silent degradation of every agent on
+# that provider.
+#
+# models.dev is a public, keyless registry that DOES carry per-model limits,
+# keyed by provider api host and bare model id:
+#   {"opencode": {"api": "https://opencode.ai/inference/v1",
+#                 "models": {"qwen3.8-flash":
+#                            {"limit": {"context": 1000000, ...}}}}}
+# 81 of the 85 opencode models match by exact id, and the SMALLEST context in
+# that matched set is 204,800 — no opencode model is a 32k model.
+#
+# Ranking is unchanged (#69): admin `context_window` > provider-reported `ctx`
+# > TG_DEFAULT_CONTEXT_WINDOW > 32768. The registry only supplies a `ctx` the
+# provider itself did not report, so a gateway that publishes its own numbers
+# always wins. It is applied at REFRESH time, not per job: the hot lookup
+# stays exactly as #69 left it, and the catalog (and therefore the dashboard)
+# shows the truth instead of a dash.
+
+_MODELS_DEV_URL = "https://models.dev/api.json"
+_MODELS_DEV_TTL_S = 24 * 3600.0            # daily-ish; catalog refresh is rarer
+_MODELS_DEV_TIMEOUT_S = 30                 # payload is ~5.6 MB
+_MODELS_DEV_MAX_BYTES = 24 * 1024 * 1024   # hard cap: never an unbounded read
+_models_dev: dict = {}                     # {api-host: {model_id: context}}
+_models_dev_loaded_at = 0.0
+
+
+def _parse_models_dev(payload) -> dict:
+    """Reduce a models.dev dump to {api-host: {model-id: context-tokens}}.
+    Pure — no I/O, so it is unit-testable without a network. Keeps positive
+    ints only. Same-host providers must not clobber each other (opencode and
+    opencode-go both live on opencode.ai and disagree on three ids), so the
+    FIRST writer for a model id wins."""
+    out: dict[str, dict[str, int]] = {}
+    if not isinstance(payload, dict):
+        return out
+    for prov in payload.values():
+        if not isinstance(prov, dict):
+            continue
+        api, models = prov.get("api"), prov.get("models")
+        if not isinstance(api, str) or not isinstance(models, dict):
+            continue
+        host = _host_key(api)   # bare hostname: models.dev keys have no port
+        if not host:
+            continue
+        slot = out.setdefault(host, {})
+        for mid, m in models.items():
+            if not isinstance(m, dict):
+                continue
+            lim = m.get("limit")
+            ctx = lim.get("context") if isinstance(lim, dict) else None
+            if isinstance(ctx, int) and not isinstance(ctx, bool) and ctx > 0:
+                slot.setdefault(str(mid), ctx)
+    return {h: mm for h, mm in out.items() if mm}
+
+
+async def load_models_dev() -> dict:
+    """The registry map, fetched at most once per TTL and NEVER raising: a
+    failed fetch leaves the previous map (empty on first run) and the refresh
+    falls back to the env default. Lookups must never fail a job or a refresh
+    (R78 invariant). The 5.6 MB read happens in a worker thread — same reason
+    as #69's urlopen offload — and is length-capped."""
+    global _models_dev, _models_dev_loaded_at
+    if not _models_dev or \
+            time.monotonic() - _models_dev_loaded_at > _MODELS_DEV_TTL_S:
+        try:
+            req = urllib.request.Request(
+                _MODELS_DEV_URL,
+                headers={"User-Agent": "TreeGent/0.1 (+https://github.com/"
+                                       "nstern-digital-solution/TreeGent)"})
+
+            def _fetch() -> str:
+                # #54 invariant: the timeout MUST be a keyword arg.
+                with urllib.request.urlopen(
+                        req, timeout=_MODELS_DEV_TIMEOUT_S) as r:
+                    return r.read(_MODELS_DEV_MAX_BYTES).decode(
+                        "utf-8", "replace")
+
+            parsed = _parse_models_dev(
+                json.loads(await asyncio.to_thread(_fetch)))
+            if parsed:
+                _models_dev = parsed
+        except Exception as e:  # noqa: BLE001 — total, never propagates
+            print(f"[proxy] models.dev window lookup failed (catalog falls "
+                  f"back to the env default): {type(e).__name__}: "
+                  f"{str(e)[:160]}", flush=True)
+        _models_dev_loaded_at = time.monotonic()
+    return _models_dev
+
+
+def _resolved_ctx(model_row: dict, reg_slot: dict, mid: str) -> int | None:
+    """The window to store as ctx for one listed model.
+
+    Ranking (unchanged from #69): what the GATEWAY reports wins, even when it
+    disagrees with the registry — the provider is authoritative about its own
+    serving limits. The registry only fills a hole: a metadata-poor listing
+    (opencode reports no context_length at all) leaves the model with no
+    window, and the alternative is the 32768 default, which silently caps an
+    agent's whole working set. A reported 0 is treated as no report.
+    """
+    reported = model_row.get("context_length")
+    if isinstance(reported, int) and not isinstance(reported, bool) \
+            and reported > 0:
+        return reported
+    w = (reg_slot or {}).get(mid)
+    return w if isinstance(w, int) and w > 0 else None
+
+
+def _host_key(url: str) -> str:
+    """Bare lowercase hostname of a url — the key models.dev files providers
+    under. It MUST be the hostname and not the netloc: netloc keeps the port,
+    so a gateway on http://gw.internal:8001/v1 (or a test stub on
+    127.0.0.1:PORT) would never match the registry's 'gw.internal' entry."""
+    try:
+        h = urllib.parse.urlsplit(url).hostname
+    except ValueError:
+        return ""
+    return h.lower() if h else ""
+
+
 # ---------------- catalog refresh (providers are data) ----------------
 
 async def refresh_catalog() -> int:
@@ -475,10 +605,13 @@ async def refresh_catalog() -> int:
     n = 0
     errors: dict[str, str] = {}
     ready = await ready_providers()
+    reg = await load_models_dev()          # {} if unreachable — by design
     for name, p in ready.items():
         if p.get("kind") != "openai-compat":
             continue  # future provider kinds get their own fetchers
         base = p["base_url"].rstrip("/")
+        # registry slot for THIS provider's host (models.dev keys by host)
+        reg_slot = reg.get(_host_key(base)) or {}
         # Some OpenAI-compat gateways serve /models on a parent path (e.g.
         # opencode: chat works on .../openai/v1, model list lives at
         # .../inference/v1/models). Try base, then progressively shorter
@@ -560,7 +693,10 @@ async def refresh_catalog() -> int:
                 {"_id": f"{name}/{mid}"},
                 {"$set": {"provider": name, "listed": True,
                           "modalities": mods,
-                          "ctx": m.get("context_length")},
+                          # #69 provider value wins; the registry only
+                          # fills what the gateway did not report (metadata-
+                          # poor providers: opencode et al.). Never overrides.
+                          "ctx": _resolved_ctx(m, reg_slot, mid)},
                  "$setOnInsert": {"designations": ["task"], "rank": 0,
                                   "excluded": False}},
                 upsert=True)
