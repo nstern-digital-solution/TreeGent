@@ -164,3 +164,12 @@ table.data th, table.data td { border: 1px solid var(--border, #ccc); padding: 3
 .msg .text .md-h4, .msg .text .md-h5, .msg .text .md-h6 { font-size: 0.95em; }
 .msg .text hr { border: none; border-top: 1px solid #2b303a; margin: 0.5em 0; }
 .msg .text a { color: #6cb2ff; }
+
+/* group creation (ChatPane) */
+.new-group-btn { margin-top: .75rem; width: 100%; }
+.new-group { display: flex; flex-direction: column; gap: .5rem; margin-top: .5rem;
+  padding: .5rem; border: 1px solid #d0d7de; border-radius: 8px; background: #fafbfc; }
+.ng-name { width: 100%; }
+.ng-members { max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: .2rem; }
+.ng-member { display: flex; align-items: center; gap: .4rem; font-size: .9rem; padding: .15rem .25rem; }
+.ng-actions { display: flex; justify-content: flex-end; gap: .5rem; }
