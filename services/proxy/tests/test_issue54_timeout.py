@@ -10,9 +10,16 @@ a refused port short-circuits earlier and cannot pin the bug.
 """
 import asyncio
 import http.server
-import threading
-import urllib.error
-import urllib.request
+import os
+
+# proxy-suite convention (cf. test_r78_context_window.py): the app config
+# import asserts a secure service token unless TG_DEV is explicitly set —
+# set it BEFORE importing any services.proxy module (review #63)
+os.environ.setdefault("TG_DEV", "1")
+
+import threading  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
 
 import pytest
 
