@@ -468,6 +468,18 @@ PLAYWRIGHT_BROWSERS_PATH=/var/lib/treegent/pw-browsers \\
   || echo "[update] WARN: chromium install failed — the browser tool will report it as unavailable"
 grep -q PLAYWRIGHT_BROWSERS_PATH /etc/treegent/runtime.env 2>/dev/null \\
   || echo 'PLAYWRIGHT_BROWSERS_PATH=/var/lib/treegent/pw-browsers' >> /etc/treegent/runtime.env
+# C1 (audit #64) compat: a provisioned-with-exec host must KEEP exec across
+# upgrades (the config default flipped fail-closed). env templates that
+# predate the explicit flag get it here — an explicit true/false line is
+# left untouched (reserved hosts keep their refusal).
+grep -q '^TG_RUNTIME_EXEC_ENABLED=' /etc/treegent/runtime.env 2>/dev/null \\
+  || echo 'TG_RUNTIME_EXEC_ENABLED=true' >> /etc/treegent/runtime.env
+# H3 (audit #64) compat: runtime.env from before the per-host daemon token
+# (R46) would now trip the boot-time credential guard (empty token refuses).
+# Backfill a fresh per-host runtime token — central stores only the host-key
+# hash, so nothing else must learn this value.
+grep -q '^TG_RUNTIME_SERVICE_TOKEN=rt_' /etc/treegent/runtime.env 2>/dev/null \\
+  || echo "TG_RUNTIME_SERVICE_TOKEN=rt_$(head -c24 /dev/urandom | od -An -tx1 | tr -d ' \\n')" >> /etc/treegent/runtime.env
 systemctl restart treegent-agent.service
 echo "updated to {target_sha[:7]}"
 """

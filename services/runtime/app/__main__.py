@@ -16,15 +16,17 @@ app = FastAPI(title="TreeGent runtime", version="0.1.0")
 
 
 def _token_ok(t: str) -> bool:
-    """Fail-closed: the shipped default token never authorizes /internal
+    """Fail-closed: the shipped default tokens never authorize /internal
     unless TG_DEV=1 explicitly marks a development machine. Agent hosts
     run WITHOUT TG_SERVICE_TOKEN (R45), so their runtime API must refuse
-    the well-known default instead of accepting it."""
+    the well-known defaults instead of accepting them: the dev default
+    AND the env.example placeholder (H3, audit #64)."""
     if not t or not settings.service_token:
         return False                       # empty header/config never authorizes
     if t != settings.service_token:
         return False
-    if t in ("dev-service-token",) and os.environ.get("TG_DEV") != "1":
+    if t in ("dev-service-token", "change-me-random") \
+            and os.environ.get("TG_DEV") != "1":
         return False
     return True
 
