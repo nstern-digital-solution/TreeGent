@@ -26,6 +26,21 @@ def _attach_hint(detail) -> str:
     return f" ({m.group(1)})" if m else ""
 
 
+def _flat(text) -> str:
+    """Untrusted fragments (mail From/Subject headers, wake detail pieces)
+    reach context as ONE line only: CR/LF stripped and whitespace runs
+    collapsed (H2/#55 — newline smuggling forges fake multi-line frames
+    that read like real turns)."""
+    return " ".join(str(text or "").split())
+
+
+def _wake_detail(detail) -> str:
+    """H2/#55: wake `detail` at injection (both tiers) — service-built,
+    but it embeds untrusted fragments (mail From headers, approver text):
+    same CR/LF strip + whitespace collapse, hard-capped at 160 chars."""
+    return _flat(detail)[:160]
+
+
 def _cdb():
     """Central-mode Mongo handle. Imported lazily: hosted mode (host_key
     set) has NO client and must never touch this."""
@@ -306,23 +321,32 @@ description before guessing parameters. Prefer the narrow tool over the broad on
                 mail = await _cdb().mail_messages.find_one(
                     {"_id": w.get("mail_message_id")})
                 if mail:
+                    # H2 (#55): notification-only, mirroring the hosted
+                    # tier — sender + subject, NO body text (R58: bodies
+                    # never auto-enter context; content is read with
+                    # mail.read). From/Subject are attacker-controlled
+                    # headers: CR/LF stripped + whitespace collapsed so
+                    # they cannot smuggle fake multi-line frames.
                     n_att = len(mail.get("attachments") or [])   # #60
                     lines.append(
-                        f"You have a new email from {mail.get('from_addr')} "
+                        f"You have a new email from "
+                        f"{_flat(mail.get('from_addr'))} "
                         f"received at {w['created_at'].isoformat()}: "
-                        f"Subject: {mail.get('subject')} | {mail.get('text', '')[:500]}"
+                        f"Subject: {_flat(mail.get('subject'))} "
+                        f"— use mail.read."
                         + (f" ({n_att} attachments)" if n_att else ""))
             elif w["reason"] == "approval":
                 if w.get("detail"):
                     lines.append(f"Approval {w.get('approval_id')} update: "
-                                 f"{w['detail']}")
+                                 f"{_wake_detail(w['detail'])}")
                 else:
                     lines.append(f"You have a pending approval waiting on "
                                  f"you (id {w.get('approval_id')}) — use "
                                  f"mail.check.")
             elif w["reason"] == "approval-rejected":
                 lines.append(f"Your request {w.get('approval_id')} was "
-                             f"rejected. Reason: {w.get('detail', 'none')}")
+                             f"rejected. Reason: "
+                             f"{_wake_detail(w.get('detail') or 'none')}")
         return lines
 
     async def _collect_injections_hosted(self) -> list[str]:
@@ -354,8 +378,10 @@ description before guessing parameters. Prefer the narrow tool over the broad on
                 # lists approvals only and burned tool calls live.
                 # #60: the wake detail's '(N attachments)' tail renders back
                 # so the agent knows a download decision is waiting.
+                # H2 (#55): the detail is sanitized at injection here too
+                # (CR/LF strip + 160 cap) — it embeds raw From headers.
                 lines.append(f"You have new mail waiting (wake {w['wake_id']})"
-                             f"{_attach_hint(w.get('detail'))} "
+                             f"{_attach_hint(_wake_detail(w.get('detail')))} "
                              "— use mail.read.")
             elif reason == "approval":
                 lines.append(f"You have a pending approval waiting on you "
