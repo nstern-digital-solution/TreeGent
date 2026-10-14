@@ -5,7 +5,8 @@ Collections (shared treegent DB):
   mailboxes     {_id, address, kind: personal|shared, owner | members[]}
   mail_messages {_id, mailbox_id, direction: in|out, from, to, subject,
                  text, html, status: pending|sent|failed|received, ts,
-                 approval_id?}
+                 approval_id?, attachments: [{id, filename, content_type,
+                 size}]}
   approvals     {_id, action, payload, requester_id, approver_id,
                  status: pending|approved|rejected, created_at,
                  decided_at?, reason?}
@@ -32,6 +33,10 @@ class Settings(BaseSettings):
     chat_url: str = "http://127.0.0.1:8000"
     mail_domain: str = Field(default="treegent.local",
                           validation_alias=AliasChoices("TG_MAIL_DOMAIN"))  # deployment data
+    # issue #60: attachment download cap (bytes). TG_MAIL_ATTACH_MAX via the
+    # env_prefix. Default 25 MB — enforced at the stored metadata size
+    # BEFORE the provider fetch and again while streaming.
+    attach_max: int = 26214400
 
     model_config = {"env_prefix": "TG_MAIL_", "env_file": ".env", "extra": "ignore"}
 

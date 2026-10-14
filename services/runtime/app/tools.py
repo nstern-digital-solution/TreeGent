@@ -100,6 +100,19 @@ def safe_ws_path(workspace: str, rel: str) -> str:
     return p
 
 
+def _fmt_size(n) -> str:
+    """Human byte size for attachment lines: '13 KB', '1.2 MB'."""
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n < 1024:
+        return f"{n} bytes"
+    if n < 1024 * 1024:
+        return f"{round(n / 1024)} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
 # ---------------- SSRF guard (R68): no fetches into private space ---------
 
 def _url_allowed(host: str) -> bool:
@@ -274,8 +287,16 @@ async def t_mail_read(ctx: ToolContext, args: dict) -> str:
         msgs = [m for m in msgs if m.get("direction") == "in"]
     for m in msgs:
         d = "→" if m.get("direction") == "out" else "←"
-        lines.append(f"[{m.get('ts', '')}] {d} from {m.get('from') or '?'} "
-                     f"| {m.get('subject', '')}")
+        line = (f"[{m.get('ts', '')}] {d} from {m.get('from') or '?'} "
+                f"| {m.get('subject', '')} "
+                f"(id: {m.get('id') or m.get('_id') or '?'})")
+        # issue #60 (notify-only): attachments are LISTED, never downloaded
+        # here — mail.save_attachment fetches one on explicit request
+        for a in m.get("attachments") or []:
+            line += (f" | attach: {a.get('filename') or '?'} "
+                     f"({_fmt_size(a.get('size'))}, "
+                     f"{a.get('content_type') or 'application/octet-stream'})")
+        lines.append(line)
         body = (m.get("text") or "")[:500]
         if body:
             lines.append(f"    {body}")
@@ -303,6 +324,77 @@ async def t_mail_check(ctx: ToolContext, args: dict) -> str:
         lines.append(f"  {a['id']}: {a['action']} {p.get('to','')} | "
                      f"{a.get('status')}{' — ' + a['reason'] if a.get('reason') else ''}")
     return "\n".join(lines)
+
+
+async def t_mail_save_attachment(ctx: ToolContext, args: dict) -> str:
+    """Save ONE mail attachment into your workspace (issue #60). Nothing is
+    ever downloaded automatically — this tool is the ONLY way attachment
+    bytes reach your workspace. mail=<mail row id from mail.read>,
+    filename=<attachment name>, to=<workspace path> (default:
+    attachments/<filename>), overwrite=true to replace an existing file."""
+    from urllib.parse import quote
+    mail_id = str(args.get("mail") or "").strip()
+    name = str(args.get("filename") or "").strip()
+    if not mail_id or not name:
+        return ("ERROR: need 'mail' (mail row id from mail.read) and "
+                f"'filename'; got keys {sorted(args)}")
+    # find the mail row through the messages endpoints (own/shared scope
+    # enforced server-side — unreadable mail is simply not found here)
+    try:
+        boxes = await ctx.svcs._call(settings.mail_url, "/mailboxes")
+    except RuntimeError as e:
+        return f"ERROR: {e}"
+    msg, mbx_id = None, ""
+    for b in boxes or []:
+        msgs = await ctx.svcs._call(
+            settings.mail_url,
+            f"/mailboxes/{quote(str(b.get('id')))}/messages",
+            params={"limit": "200"})
+        hit = [m for m in (msgs or []) if m.get("id") == mail_id]
+        if hit:
+            msg, mbx_id = hit[0], str(b.get("id"))
+            break
+    if not msg:
+        return (f"ERROR: no readable mail message {mail_id!r} — pass the "
+                "mail row id shown by mail.read")
+    atts = msg.get("attachments") or []
+    cands = [a for a in atts if (a.get("filename") or "") == name]
+    if len(cands) > 1:
+        listing = ", ".join(
+            f"{a.get('filename')!r} (id {a.get('id')}, {_fmt_size(a.get('size'))}, "
+            f"{a.get('content_type')})" for a in cands)
+        return (f"ERROR: {name!r} matches {len(cands)} attachments on this "
+                f"mail — candidates: {listing}")
+    if not cands:
+        # the ambiguity error lists ids — accept one so it is resolvable
+        cands = [a for a in atts if a.get("id") == name]
+    if not cands:
+        avail = ", ".join(f"{a.get('filename')!r} (id {a.get('id')})"
+                          for a in atts) or "none"
+        return (f"ERROR: no attachment {name!r} on this mail — "
+                f"available: {avail}")
+    att = cands[0]
+    to = (str(args.get("to") or "").strip()
+          or os.path.join("attachments",
+                          os.path.basename(att.get("filename") or "attachment")))
+    try:
+        dest = safe_ws_path(ctx.workspace, to)
+    except PermissionError as e:
+        return f"ERROR: {e}"
+    if os.path.exists(dest) and not args.get("overwrite"):
+        return (f"ERROR: {to} already exists in the workspace — pass "
+                f"overwrite=true to replace it")
+    try:
+        data = await ctx.svcs._call_bytes(
+            settings.mail_url,
+            f"/mailboxes/{quote(mbx_id)}/messages/{quote(mail_id)}"
+            f"/attachments/{quote(str(att.get('id')))}")
+    except RuntimeError as e:
+        return f"ERROR: {e}"
+    os.makedirs(os.path.dirname(dest) or ctx.workspace, exist_ok=True)
+    with open(dest, "wb") as fh:
+        fh.write(data)
+    return f"saved {to} ({len(data)} bytes)"
 
 
 async def t_approval_decide(ctx: ToolContext, args: dict) -> str:
@@ -814,6 +906,7 @@ TOOLS: dict = {
     "chat.check": t_chat_check,
     "mail.send": t_mail_send,
     "mail.read": t_mail_read,
+    "mail.save_attachment": t_mail_save_attachment,
     "mail.check": t_mail_check,
     "approvals.decide": t_approval_decide,
     "secrets.list": t_secrets_list,
@@ -864,6 +957,15 @@ TOOL_SCHEMAS = [
             "mailbox": {"type": "string", "description": "shared mailbox address (optional; default = your personal one)"},
             "limit": {"type": "integer", "description": "max messages (default 10)"},
             "unread_only": {"type": "boolean", "description": "only incoming"}}}},
+    {
+        "name": "mail.save_attachment",
+        "description": "save ONE mail attachment into your workspace. Attachments are never downloaded automatically — mail.read lists them ('| attach: name (size, type)') and this tool is the only way the bytes reach your workspace. Resolve by filename (or attachment id when two attachments share a name); to defaults to attachments/<filename>; refuses to overwrite unless overwrite=true.",
+        "parameters": {"type": "object", "properties": {
+            "mail": {"type": "string", "description": "mail row id (from mail.read)"},
+            "filename": {"type": "string", "description": "attachment filename (or attachment id)"},
+            "to": {"type": "string", "description": "workspace path to write (default: attachments/<filename>)"},
+            "overwrite": {"type": "boolean"},
+            "required": ["mail", "filename"]}}},
     {
         "name": "mail.check", "description": "list pending approvals: waiting on me + requested by me",
         "parameters": {"type": "object", "properties": {}}},
