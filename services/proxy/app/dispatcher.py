@@ -489,10 +489,13 @@ async def refresh_catalog() -> int:
                                    "User-Agent": UA})
             try:
                 # R69: blocking urlopen stalled the whole proxy event loop
-                # (20s x candidates x providers) — run it in a worker thread
+                # (20s x candidates x providers) — run it in a worker thread.
+                # #54: the timeout MUST be keyword — positional 20 binds to
+                # `data`, and a GET carrying an int body TypeErrors on every
+                # call (refresh 100% broken since R69).
                 import asyncio as _aio
                 resp = await _aio.to_thread(
-                    urllib.request.urlopen, req, 20)
+                    urllib.request.urlopen, req, timeout=20)
                 models = json.load(resp)["data"]
                 break
             except urllib.error.HTTPError as e:
@@ -505,7 +508,7 @@ async def refresh_catalog() -> int:
                         resp = await _aio.to_thread(
                             urllib.request.urlopen,
                             urllib.request.Request(try_path,
-                                headers={"User-Agent": UA}), 20)
+                                headers={"User-Agent": UA}), timeout=20)
                         models = json.load(resp)["data"]
                         break
                     except Exception:
