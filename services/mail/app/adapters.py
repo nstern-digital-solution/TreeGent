@@ -53,12 +53,20 @@ def compact_attachments(raw) -> list[dict]:
 def wake_detail(from_addr: str, attachments) -> str:
     """Pull-wake detail string; mails WITH attachments append
     '(N attachments)' (issue #60) so the agent knows to look before
-    calling mail.read."""
-    d = f"new mail from {from_addr}"
+    calling mail.read.
+
+    The From fragment is a raw, attacker-controlled header (H2/#55):
+    CR/LF stripped and whitespace collapsed at the source so the detail
+    is always a single line, and capped so the WHOLE detail fits the
+    160-char injection budget (runtime loop._wake_detail) — the ruled
+    '(N attachments)' suffix is appended AFTER the cap, so it always
+    survives intact."""
     n = len(attachments or [])
-    if n:
-        d += f" ({n} attachments)"
-    return d
+    suffix = f" ({n} attachments)" if n else ""
+    addr = " ".join(str(from_addr or "").split())
+    room = 160 - len("new mail from ") - len(suffix)
+    addr = addr[:max(room, 0)]
+    return f"new mail from {addr}{suffix}"
 
 
 class AttachmentError(Exception):
