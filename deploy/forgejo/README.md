@@ -26,9 +26,8 @@ TG_FORGE_DOMAIN=git.nstern.de docker compose up -d
 ./migrate-from-github.sh nstern-digital-solution/TreeGent
 ```
 
-Caddy: add the `git.<domain>` block from `deploy/Caddyfile.example` and
-reload. Then restart the chat service so it picks up the env vars
-(`treegent update` does this).
+Caddy: `deploy/forgejo/add-caddy-block.sh` finds the live Caddyfile,
+appends the `git.<domain>` site (idempotent), validates and reloads.
 
 ## Verify
 
