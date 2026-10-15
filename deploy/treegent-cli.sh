@@ -8,6 +8,8 @@ set -uo pipefail
 REPO="/opt/TreeGent"
 VENV="$REPO/.venv"
 ENV_FILE="/etc/treegent/env"
+# every TreeGent setting lives here (R80: forge domain too)
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
 c_green=$'\033[32m'; c_red=$'\033[31m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
 say()  { printf '%s\n' "$*"; }
@@ -185,6 +187,13 @@ cmd_update() {
   else
     err "    restart failed — see: journalctl -u treegent -n 50"
     exit 1
+  fi
+
+  say "4b/5 forgejo (R80, only when TG_FORGE_DOMAIN is set)"
+  if bash "$REPO/deploy/forgejo/ensure-forgejo.sh" 2>&1 | sed 's/^/    /'; then
+    :
+  else
+    err "forgejo stage failed — forge not updated; core services continue"
   fi
 
   say "5/5 health"

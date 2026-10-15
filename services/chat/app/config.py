@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     # arrive with services/control (R22); M1 uses the trusted-service header.
     service_token: str = Field(default="dev-service-token",
                             validation_alias=AliasChoices("TG_CHAT_SERVICE_TOKEN", "TG_SERVICE_TOKEN"))
+    # R80 Forgejo connector: empty forge_url disables provisioning entirely
+    forge_url: str = Field(default="",
+                       validation_alias=AliasChoices("TG_CHAT_FORGE_URL", "TG_FORGE_URL"))
+    forge_token: str = Field(default="",
+                         validation_alias=AliasChoices("TG_CHAT_FORGE_TOKEN", "TG_FORGE_TOKEN"))
 
     model_config = {"env_prefix": "TG_CHAT_", "env_file": ".env", "extra": "ignore"}
 

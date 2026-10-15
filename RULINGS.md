@@ -203,3 +203,57 @@ are you?" — correct; v1 used ONE central keypair for all hosts.
   **OPEN (not ruled, not built): outbound attachments** — attaching files to sent mail is NOT part of this ruling and remains open; nothing in this change touches the outbound path (mail.send is unchanged and still sends text/html only).
 
   Proofs: mail suite **61 passed** (34 baseline + 27: compact-metadata-at-import incl. field-stripping, empty-list marker, wake-detail count + no-suffix; heal backfill for pre-#60 rows with no-re-wake pin + body+metadata one-pass heal; endpoint matrix over a real FastAPI app with real header auth — 401 no credential / 401 bad token / 403 unknown actor / 403 stranger (owner 200, shared member 200) / 404 unknown att / 404 wrong mailbox / 404 no provider id / 413 over-cap with the provider NEVER called / streaming round-trip with stub adapters asserting body + content-type + content-disposition / mid-stream over-cap abort / bounded 502 on provider errors / no-download-link 502; named-UA + documented path on the retrieve-attachment call; real `iter_attachment_bytes` cap + HTTP-error behavior over a stubbed httpx; env knob `TG_MAIL_ATTACH_MAX` binds); runtime suite **107 passed** (94 baseline + 13: mail.read attach-line rendering, save_attachment round-trip + custom `to`, traversal rejection, overwrite refusal + opt-in, ambiguity listing candidates + id disambiguation, unknown mail/attachment errors, tool + schema registration, system-prompt discovery next to mail.read, hosted + central wake '(N attachments)' rendering both with and without attachments). Every suite run used stub adapters/fake DBs — no real Resend call was made.
+
+## R80 — self-hosted Forgejo forge; GitHub migration; auto-accounts (2026-10-15)
+
+**Trigger:** the rosa-mar GitHub account was suspended for TOS violations;
+our review flow lost a reviewer and two PR/issue objects vanished with no
+appeal (work restored as PR #75). Ruling (Felix, 2026-10-15): move off
+GitHub onto self-hosted Forgejo in Docker on the shared server, managed
+through the API.
+
+Ruling verbatim:
+> "we need to move of github and have the shared server 'bundle' forgejo
+> where we then can also auto setup account for every human or agent
+> created in treegent. basically we run forgejo in a docker and connect
+> our management through the api"
+
+Follow-up rulings, same day:
+1. **Public**, configurable domain (`TG_FORGE_DOMAIN`, e.g. git.nstern.de),
+   Caddy-fronted TLS.
+2. **Migrate but do not change anything on GitHub yet** — migration pulls
+   (issues, PRs, labels, milestones, releases); the GitHub repo stays
+   untouched until a later explicit cutover ruling.
+3. **Management connection + automatic accounts** for every human/agent
+   actor at creation. **PR and review-request events are NOT chat
+   messages** (accounts only).
+
+Review follow-up (Felix, PR #76): no extra deploy commands, and the domain
+lives in the same env file as every other setting. So: `/etc/treegent/env`
+gains `TG_FORGE_DOMAIN` (the only hand-set value); `treegent update` runs
+stage 4b = `ensure-forgejo.sh` (container up, health-wait, first-run
+bootstrap incl. token mint + env wiring, idempotent; skipped entirely when
+the domain is unset or docker is absent). Migration stays a deliberate
+one-shot script.
+
+Implementation (PR feat/forgejo-integration):
+- `deploy/forgejo/` — docker-compose (127.0.0.1:3001 bind, registration
+  disabled, HTTPS-git only), `ensure-forgejo.sh` (update stage 4b),
+  `bootstrap.sh` (health-wait, admin via container CLI, token mint,
+  .env wiring, idempotent), `migrate-from-github.sh` (Forgejo migrate
+  API; read-only on the GitHub side), README runbook.
+- `services/chat/app/forge.py` — total/idempotent provisioner hooked into
+  create_actor (fire-and-forget): forge down NEVER blocks or fails actor
+  creation (actor doc records `forge.status=pending`; `GET /internal/forge/sync`
+  retries). Disabled entirely when `TG_CHAT_FORGE_URL` is empty.
+  Usernames mirror TreeGent usernames (lowercased `[a-z0-9-]`, max 40);
+  placeholder mailbox `<user>@forge.treegent.invalid`; random 28-char
+  password; `login_name` carries the actor id for traceability.
+- `deploy/Caddyfile.example` — `git.<domain>` site block.
+- No notification bridge: forge events deliberately do not become chat
+  messages (ruling 3).
+
+Proofs: chat suite **33 passed** (26 baseline + 7 new) against a live
+uvicorn + disposable mongod; connector unit tests cover username mapping,
+password alphabet, create, idempotent-422, forge-down totality,
+disabled-by-default, pending retry via /internal/forge/sync.
