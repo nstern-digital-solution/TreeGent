@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -70,6 +72,9 @@ async def create_actor(body: ActorIn, actor: dict = Depends(ORG_ADMIN_BOOTSTRAP)
         if body.host_id:
             doc["host_id"] = body.host_id   # R53: claimed by that host's runtime
     await db.actors.insert_one(doc)
+    # R80: forge account, fire-and-forget — never blocks or fails creation
+    from .. import forge
+    asyncio.ensure_future(forge.provision(pub(doc)))
     return pub(doc)
 
 

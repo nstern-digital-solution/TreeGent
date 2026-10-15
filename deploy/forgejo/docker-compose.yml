@@ -1,0 +1,31 @@
+# Forgejo (self-hosted git forge) for TreeGent — see deploy/forgejo/README.md
+# Public at the configurable TG_FORGE_DOMAIN, fronted by Caddy (deploy/Caddyfile.example).
+# The container binds 127.0.0.1 ONLY; TLS + domain routing happen in Caddy.
+networks:
+  forgejo:
+    external: false
+
+services:
+  server:
+    image: codeberg.org/forgejo/forgejo:12
+    container_name: treegent-forgejo
+    restart: always
+    networks:
+      - forgejo
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - FORGEJO__server__DOMAIN=${TG_FORGE_DOMAIN:-git.example.com}
+      - FORGEJO__server__ROOT_URL=https://${TG_FORGE_DOMAIN:-git.example.com}/
+      - FORGEJO__server__SSH_DOMAIN=${TG_FORGE_DOMAIN:-git.example.com}
+      - FORGEJO__server__OFFLINE_MODE=true
+      - FORGEJO__service__DISABLE_REGISTRATION=true
+      # API access only; HTTP git works through Caddy with the same tokens.
+      - FORGEJO__service__DEFAULT_ALLOW_CREATE_ORGANIZATION=false
+      - FORGEJO__service__SHOW_REGISTRATION_BUTTON=false
+    volumes:
+      - ./forgejo-data:/data
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "127.0.0.1:3001:3000"
+    # no ssh port: git over https only (tokens); keeps the surface minimal

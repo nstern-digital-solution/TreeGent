@@ -9,6 +9,14 @@ from ..security import require_service
 router = APIRouter(prefix="/internal", tags=["internal"])
 
 
+@router.get("/forge/sync")
+async def forge_sync(_: None = Depends(require_service_only)):
+    """R80: retry pending Forgejo provisions (forge was down, etc.).
+    Service-token only. Returns number of actors fixed."""
+    from .. import forge
+    return {"fixed": await forge.sync_pending()}
+
+
 @router.get("/org-weights")
 async def org_weights(_: None = Depends(require_service)):
     """Actor id → org depth (0 = top of tree). Used by services/proxy to

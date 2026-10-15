@@ -36,3 +36,17 @@ treegent.example.com {
         reverse_proxy 127.0.0.1:3000
     }
 }
+
+# ---------------------------------------------------------------------------
+# Forgejo (R80): self-hosted git forge at git.<your domain>, same host,
+# container bound to 127.0.0.1:3001 (deploy/forgejo/docker-compose.yml).
+# git over HTTPS (token auth); no ssh port exposed.
+git.treegent.example.com {
+    encode zstd gzip
+    handle /api/* {
+        reverse_proxy 127.0.0.1:3001
+    }
+    handle {
+        reverse_proxy 127.0.0.1:3001
+    }
+}
