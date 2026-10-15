@@ -228,11 +228,20 @@ Follow-up rulings, same day:
    actor at creation. **PR and review-request events are NOT chat
    messages** (accounts only).
 
+Review follow-up (Felix, PR #76): no extra deploy commands, and the domain
+lives in the same env file as every other setting. So: `/etc/treegent/env`
+gains `TG_FORGE_DOMAIN` (the only hand-set value); `treegent update` runs
+stage 4b = `ensure-forgejo.sh` (container up, health-wait, first-run
+bootstrap incl. token mint + env wiring, idempotent; skipped entirely when
+the domain is unset or docker is absent). Migration stays a deliberate
+one-shot script.
+
 Implementation (PR feat/forgejo-integration):
 - `deploy/forgejo/` — docker-compose (127.0.0.1:3001 bind, registration
-  disabled, HTTPS-git only), `bootstrap.sh` (health-wait, admin via
-  container CLI, token mint, .env wiring, idempotent), `migrate-from-github.sh`
-  (Forgejo migrate API; read-only on the GitHub side), README runbook.
+  disabled, HTTPS-git only), `ensure-forgejo.sh` (update stage 4b),
+  `bootstrap.sh` (health-wait, admin via container CLI, token mint,
+  .env wiring, idempotent), `migrate-from-github.sh` (Forgejo migrate
+  API; read-only on the GitHub side), README runbook.
 - `services/chat/app/forge.py` — total/idempotent provisioner hooked into
   create_actor (fire-and-forget): forge down NEVER blocks or fails actor
   creation (actor doc records `forge.status=pending`; `GET /internal/forge/sync`
