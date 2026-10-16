@@ -31,13 +31,6 @@ Stage 4b of update runs `ensure-forgejo.sh`: container up (data dir
 chown'd to the container user), health-wait, admin + token bootstrap
 (first time only), env wiring — all idempotent.
 
-**Separation of identities (ruling 2026-10-16):** provisioning never runs
-as the personal admin. `bootstrap.sh` creates a dedicated service account
-`treegent-connector` (admin — Forgejo has no narrower create-users scope —
-but never used for UI logins, independently revocable) and mints the
-connector token from THAT account. Rotate by deleting the account and
-re-running bootstrap.
-
 **First run only — the install wizard:** Forgejo shows a one-time setup
 page at `https://<domain>`. Accept the defaults (sqlite3), set Server
 domain and Base URL to the real domain, keep **Disable self-registration**
