@@ -39,19 +39,23 @@ else
     echo "admin password (store in the secrets service): $PW"
 fi
 
-# 3. mint the admin API token (skip when the connector is already armed;
-#    re-minting would orphan the previous token)
+# 3. connector token via the container CLI: needs NO admin password and NO
+#    web UI. Hands-off by design: `treegent update` arms the connector
+#    without any manual step.
 if [ -n "${TG_CHAT_FORGE_TOKEN:-}" ]; then
     echo "connector token present in env — skipping token mint"
 else
-    echo "minting admin API token"
-    TOKEN_JSON="$(curl -sf -X POST \
-        "$INTERNAL/api/v1/users/treegent-admin/tokens" \
-        -u "treegent-admin:$PW" -H "Content-Type: application/json" \
-        -d '{"name":"treegent-mgmt","scopes":["write:admin","write:user"]}')" \
-        || { echo "token mint failed — set FORGE_ADMIN_PW to the admin password and re-run" >&2; exit 1; }
-    TOKEN="$(printf '%s' "$TOKEN_JSON" \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha1"])')"
+    echo "generating connector token (container CLI)"
+    TNAME="treegent-mgmt-$(date +%Y%m%d%H%M%S)"
+    OUT="$(docker compose exec -u git -T server forgejo admin user \
+        generate-access-token -u treegent-admin -t "$TNAME" \
+        -s write:admin,write:user 2>&1)" \
+        || { echo "token generation failed: $OUT" >&2; exit 1; }
+    TOKEN="$(printf '%s' "$OUT" | grep -oE '[0-9a-f]{40}' | tail -1)"
+    if [ -z "$TOKEN" ]; then
+        echo "no token found in CLI output: $OUT" >&2
+        exit 1
+    fi
 fi
 
 # 4. wire the chat service env (single env file, PR #76 review)
