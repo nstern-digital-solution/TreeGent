@@ -50,6 +50,12 @@ async def create_actor(body: ActorIn, actor: dict = Depends(ORG_ADMIN_BOOTSTRAP)
     if body.kind not in KINDS:
         raise HTTPException(400, f"kind must be one of {KINDS}")
     uname = body.username.lower()
+    # R15 (review): the regex permits a literal ".." — join(root, username)
+    # then escapes the per-agent workspace root. Reject any username whose
+    # path segments are not plain.
+    if uname in (".", "..") or "/".strip() in uname or any(
+            s in (".", "..") for s in uname.split("/")) or uname.startswith("."):
+        raise HTTPException(400, "username must not contain path segments")
     if await db.actors.find_one({"username": uname}):
         raise HTTPException(409, "username taken")
     node = await org.compute_node("__new__", body.parent_id)  # validates parent
@@ -72,9 +78,13 @@ async def create_actor(body: ActorIn, actor: dict = Depends(ORG_ADMIN_BOOTSTRAP)
         if body.host_id:
             doc["host_id"] = body.host_id   # R53: claimed by that host's runtime
     await db.actors.insert_one(doc)
-    # R80: forge account, fire-and-forget — never blocks or fails creation
+    # R80: forge account, fire-and-forget — never blocks or fails creation.
+    # R11 (review): pass the FULL internal document — pub() renames _id to
+    # id, and forge.provision reads actor["_id"], so the pub() shape raised
+    # KeyError inside the totality wrapper: zero API calls, no pending
+    # state, silent no-op. The internal doc is the contract.
     from .. import forge
-    asyncio.ensure_future(forge.provision(pub(doc)))
+    asyncio.ensure_future(forge.provision(doc))
     return pub(doc)
 
 

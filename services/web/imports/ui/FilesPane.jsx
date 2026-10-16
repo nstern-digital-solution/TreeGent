@@ -94,7 +94,11 @@ export function FilesPane() {
     setErr(null);
     try {
       const r = await call(`/files/${id}/download`, 'GET', null, target || undefined);
-      const blob = new Blob([r], { type: 'application/octet-stream' });
+      // R12: server returns {b64} — decode to bytes; UTF-8 text decode corrupted binaries
+      const bytes = r && typeof r === 'object' && typeof r.b64 === 'string'
+        ? Uint8Array.from(atob(r.b64), c => c.charCodeAt(0))
+        : new TextEncoder().encode(r);
+      const blob = new Blob([bytes], { type: 'application/octet-stream' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = name;

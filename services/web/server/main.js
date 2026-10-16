@@ -812,7 +812,11 @@ Meteor.methods({
     });
     if (path.includes('/download')) {
       if (!res.ok) throw new Meteor.Error('files-api', `${res.status}`);
-      return await res.text();
+      // R12 (review): res.text() decodes bytes as UTF-8 — binaries were
+      // silently corrupted (16-byte PNG became 26 bytes). Return base64
+      // over DDP; the client rebuilds a Blob from decoded bytes.
+      const buf = Buffer.from(await res.arrayBuffer());
+      return { b64: buf.toString('base64') };
     }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {

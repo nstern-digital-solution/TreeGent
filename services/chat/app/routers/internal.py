@@ -94,13 +94,21 @@ async def _fetch_agent_messages(agent_id: str, sender: str | None,
         if not s:
             return {"messages": []}
         q["sender_id"] = s["_id"]
-    cur = db.inbox.find(q).sort("received_at", -1).limit(max(1, min(limit, 100)))
-    # NOTE: rows WITHOUT the message body join are useless; fetch bodies+sender
+    # R13 (review): rows whose message document is gone (TTL) are orphans.
+    # Skipping them INSIDE a limit()-window let 10 dead rows starve every
+    # live message behind them. Scan a wider window, ack orphans as seen
+    # (they can never deliver a body), and stop at `limit` live rows.
+    cur = db.inbox.find(q).sort("received_at", -1).limit(
+        max(1, min(limit, 100)) * 3)
     out = []
+    orphans = []
     async for row in cur:
         msg = await db.messages.find_one({"_id": row["message_id"]})
         if not msg:
+            orphans.append(row["message_id"])
             continue
+        if len(out) >= max(1, min(limit, 100)):
+            break
         if since:
             ra = row.get("received_at")
             ra_s = ra.isoformat() if hasattr(ra, "isoformat") else str(ra or "")
@@ -124,10 +132,18 @@ async def _fetch_agent_messages(agent_id: str, sender: str | None,
     # message fanned out to N members shares one message_id, and an
     # unscoped update marked OTHER agents' inbox rows as seen (their
     # unread filters then silently lost the message).
-    ids = [m["message_id"] for m in out] or [
-        row["message_id"] for row in
-        await db.inbox.find(q).sort("received_at", -1)
-        .limit(max(1, min(limit, 100))).to_list(None)]
+    if orphans:
+        # orphaned notifications can never deliver a body — mark them seen
+        # so they stop occupying the unread window (R13)
+        await db.inbox.update_many(
+            {"recipient_id": agent_id,
+             "message_id": {"$in": orphans}},
+            {"$set": {"seen_at": idgen.now(), "delivered_at": idgen.now(),
+                      "orphan": True}})
+    # R05 (review): mark ONLY the rows actually returned to this recipient.
+    # The old `or`-fallback re-queried and marked rows the agent never saw
+    # (e.g. ones filtered out by `since`), silently reading them.
+    ids = [m["message_id"] for m in out]
     if ids:
         await db.inbox.update_many(
             {"recipient_id": agent_id,
