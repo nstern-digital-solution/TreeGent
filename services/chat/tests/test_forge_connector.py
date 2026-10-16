@@ -81,6 +81,21 @@ def test_password_alphabet():
 
 
 @pytest.mark.asyncio
+async def test_provision_accepts_internal_doc_shape_r11(fake_forge):
+    """R11: the create_actor hook passes the FULL internal document.
+    pub() renames _id->id; provision must read _id from the internal shape
+    and must not silently no-op."""
+    from app.routers.actors import pub
+    internal = {"_id": "agt_r11", "username": "r11-agent",
+                "display_name": "R11", "kind": "agent",
+                "org": {}, "extra": {}}
+    public_shape = pub(internal)   # what the OLD hook passed
+    assert "_id" not in public_shape and public_shape["id"] == "agt_r11"
+    await forge.provision(internal)          # internal shape: must work
+    assert "r11-agent" in fake_forge.users
+
+
+@pytest.mark.asyncio
 async def test_provision_creates_user(fake_forge):
     actor = {"_id": "agt_1", "username": "rosa-m", "forge": {}}
     await forge.provision(actor)

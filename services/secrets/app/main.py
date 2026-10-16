@@ -138,8 +138,14 @@ async def update_secret(sec_id: str, body: SecretIn, CLAIM_CALLER: str = "", _c:
            "notes": body.notes, "updated_at": now()}
     if body.value:
         upd["value_enc"] = crypto.encrypt(body.value)
-    # sharing changes only by owner/member
-    upd["shared_with"] = list(body.shared_with)
+    # R03 (review): members could previously overwrite shared_with — a
+    # recipient re-sharing to outsiders with no owner check. Share
+    # mutation is OWNER-only (files already enforces this shape); members
+    # may edit content but not the ACL.
+    if caller_id != s["owner"]:
+        upd["shared_with"] = s["shared_with"]        # preserve existing ACL
+    else:
+        upd["shared_with"] = list(body.shared_with)  # owner administers ACL
     await secrets_col.update_one({"_id": sec_id}, {"$set": upd})
     s.update(upd)
     return spub_meta(s)
