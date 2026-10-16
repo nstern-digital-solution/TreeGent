@@ -27,6 +27,7 @@ docker compose version >/dev/null 2>&1 || {
 
 cd "$COMPOSE_DIR"
 mkdir -p forgejo-data
+chown -R 1000:1000 forgejo-data   # container runs as UID 1000; root-owned dir breaks the install wizard's db write
 
 # compose reads TG_FORGE_DOMAIN from the environment we just sourced
 export TG_FORGE_DOMAIN

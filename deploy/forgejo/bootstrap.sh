@@ -28,7 +28,7 @@ curl -sf "$INTERNAL/api/healthz" >/dev/null 2>&1 \
 #    root, so exec as the container's 'git' user.
 PW="${FORGE_ADMIN_PW:-$(head -c 32 /dev/urandom | base64 | tr -d '/+' | head -c 28)}"
 if docker compose exec -u git -T server forgejo admin user list 2>/dev/null \
-        | grep -q '^treegent-admin'; then
+        | awk '{print $2}' | grep -qx 'treegent-admin'; then
     echo "admin account already exists"
 else
     echo "creating admin account 'treegent-admin'"
