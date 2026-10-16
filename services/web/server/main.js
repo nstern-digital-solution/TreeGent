@@ -520,6 +520,12 @@ Meteor.methods({
   async 'tg.createActor'(username, password, display, kind, parentId, hostId) {
     check(username, String); check(password, String); check(display, String);
     check(kind, String);
+    // R81: agents get a generated name — username (or an agent-N handle)
+    // is optional and becomes infra_id; humans still require one.
+    if (kind !== 'agent' && !username.trim()) {
+      throw new Meteor.Error('username-required', 'humans need a username');
+    }
+    username = (username || '').trim();
     if (hostId !== undefined && hostId !== null) check(hostId, String);
     const caller = await Meteor.userAsync();
     if (!caller || !caller.isAdmin) throw new Meteor.Error('forbidden', 'admin only');

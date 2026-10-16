@@ -86,6 +86,7 @@ async def _provision_locked(actor: dict) -> None:
         "password": _gen_password(),
         "must_change_password": False,
         "login_name": actor["_id"],        # traceability: actor id on the forge
+        "full_name": actor.get("display_name") or "",   # R81: forge shows the name
         "visibility": "public",
         "send_notify": False,               # no mail out (R67-adjacent)
     })
@@ -139,6 +140,18 @@ async def sync_pending() -> int:
                 {"_id": a["_id"]},
                 {"$set": {"forge.error": f"{type(e).__name__}: {str(e)[:200]}"}})
     return fixed
+
+
+async def rename_account(old: str, new: str) -> bool:
+    """R81: rename a forge account. Forgejo 12 admin API:
+    POST /admin/users/{old}/rename {"new_username": new} -> 204.
+    Old handle keeps 307-redirecting, so existing issue/PR references
+    keep resolving. Returns True on confirmed rename."""
+    if not settings.forge_url:
+        return False
+    r = await _api("POST", f"/admin/users/{old}/rename",
+                   json={"new_username": new})
+    return r.status_code in (200, 204)
 
 
 async def ensure_repo(full_name: str) -> bool:

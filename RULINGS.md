@@ -257,3 +257,46 @@ Proofs: chat suite **33 passed** (26 baseline + 7 new) against a live
 uvicorn + disposable mongod; connector unit tests cover username mapping,
 password alphabet, create, idempotent-422, forge-down totality,
 disabled-by-default, pending retry via /internal/forge/sync.
+
+## R81 — Agent identity: generated names, `agent-N` as infra handle (2026-10-16)
+
+Felix: "I want to have her name! If we have many agents we need to have a
+identifier like agent-1 which is setup by me and helps me know which agent
+belongs to which vps but I will never say agent-1 do x and agent-32 do y!
+This is stupid, the name i use is the one randomly generated and i need to
+be able to use it in issues and pr too of course"
+
+RULING (FIRM):
+- **Generated name = the username.** Every agent gets a randomly generated
+  given-name username (`rosa`, `mila`, …). This is what Felix addresses
+  agents by: chat `@mentions`, forge issues/PRs, mailbox local-part,
+  workspace dir. No one is ever asked to say "agent-1 do x".
+- **`agent-N` is an infra handle, owned by Felix.** It stays as a separate
+  operator-set field (`infra_id`) shown in Hosts/admin views for VPS
+  mapping — it is NOT the username and never addressed.
+- **Forge account = the name.** Forge username mirrors the TreeGent
+  username (R80); with R81 the username IS the generated name, so
+  `@rosa` in a forge issue works because the account is `rosa`.
+- Renames: admin may rename an agent; rename propagates (actor doc,
+  forge account via admin API rename, workspace path pinned via
+  `infra_id`-anchored symlink, mailbox migration heals itself at mail
+  startup per R49/R52). Old forge handles 307-redirect (verified in
+  Forgejo 12.0.4 lab), so existing issue/PR references keep resolving.
+
+Name generation: `first [SYLLABLES]` from a curated given-name pool,
+title-case for display, plain lowercase username. Collision-checked at
+creation against Mongo; retry with next candidate. Generated names are
+stable — stored on the actor doc at creation, never regenerated.
+
+Lab-verified (Forgejo 12.0.4, scratch/forgejo-lab):
+- `POST /api/v1/admin/users` with `full_name` → 201
+- `PATCH /api/v1/admin/users/{u}` `{"full_name": ...}` → 200
+- `POST /api/v1/admin/users/{u}/rename` `{"new_username": ...}` → 204;
+  old handle 307s. Rename endpoint exists in Forgejo 12.
+
+Implementation notes:
+- `ActorIn.username` remains a plain identifier field; agents created via
+  host provisioning no longer force `agent-N` usernames — the generated
+  name becomes the username, `infra_id` carries the operator handle.
+- Existing `agent-N` actors: renamed via the new admin route at deploy
+  time (one-shot), workspace symlinked, forge accounts renamed.
