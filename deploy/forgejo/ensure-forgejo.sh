@@ -27,6 +27,7 @@ docker compose version >/dev/null 2>&1 || {
 
 cd "$COMPOSE_DIR"
 mkdir -p forgejo-data
+chown -R 1000:1000 forgejo-data   # container runs as UID 1000; root-owned dir breaks the install wizard's db write
 
 # compose reads TG_FORGE_DOMAIN from the environment we just sourced
 export TG_FORGE_DOMAIN
@@ -47,11 +48,19 @@ curl -sf http://127.0.0.1:3001/api/healthz >/dev/null 2>&1 || {
   exit 1
 }
 
-# bootstrap admin + token + env wiring ONLY when the connector isn't armed yet
+# bootstrap admin + token + env wiring ONLY when the connector isn't armed yet.
+# Track whether THIS run armed the connector: stage 4 (service restart) ran
+# before us, so a freshly written token needs one more restart to load.
+BEFORE="$(grep -c '^TG_CHAT_FORGE_TOKEN=' "$ENV_FILE" 2>/dev/null || true)"
 if [ -z "${TG_CHAT_FORGE_TOKEN:-}" ]; then
   echo "forgejo: running bootstrap (admin + token)"
   bash "$COMPOSE_DIR/bootstrap.sh" || exit 1
 else
   echo "forgejo: connector already armed"
+fi
+AFTER="$(grep -c '^TG_CHAT_FORGE_TOKEN=' "$ENV_FILE" 2>/dev/null || true)"
+if [ "$AFTER" -gt "$BEFORE" ]; then
+  echo "forgejo: connector newly armed — restarting treegent to load it"
+  systemctl restart treegent 2>/dev/null || true
 fi
 echo "forgejo: done — https://$TG_FORGE_DOMAIN (Caddy block: deploy/Caddyfile.example)"

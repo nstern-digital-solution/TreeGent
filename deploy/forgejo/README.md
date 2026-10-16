@@ -17,17 +17,31 @@ deliberately do NOT become chat messages — accounts only (ruling 2026-10-15).
   milestones, releases) into Forgejo. READ-ONLY against GitHub: migration
   pulls; nothing on GitHub is modified or deleted (ruling 2026-10-15).
 
-## Install (central server, once)
+## Install (central server)
+
+Everything lives in `/etc/treegent/env` like every other TreeGent setting
+(`TG_FORGE_DOMAIN` is the only value you set by hand):
 
 ```sh
-cd /opt/TreeGent/deploy/forgejo
-TG_FORGE_DOMAIN=git.nstern.de docker compose up -d
-./bootstrap.sh                       # admin + token + .env wiring
-./migrate-from-github.sh nstern-digital-solution/TreeGent
+echo 'TG_FORGE_DOMAIN=git.nstern.de' >> /etc/treegent/env
+treegent update
 ```
+
+Stage 4b of update runs `ensure-forgejo.sh`: container up (data dir
+chown'd to the container user), health-wait, admin + token bootstrap
+(first time only), env wiring — all idempotent.
+
+**First run only — the install wizard:** Forgejo shows a one-time setup
+page at `https://<domain>`. Accept the defaults (sqlite3), set Server
+domain and Base URL to the real domain, keep **Disable self-registration**
+checked, and enter the admin credentials (`treegent-admin` + a password
+of your choice). The wizard must complete before the API works.
 
 Caddy: `deploy/forgejo/add-caddy-block.sh` finds the live Caddyfile,
 appends the `git.<domain>` site (idempotent), validates and reloads.
+
+GitHub history import (optional, one-shot, read-only on the GitHub side):
+`./migrate-from-github.sh nstern-digital-solution/TreeGent`.
 
 ## Verify
 
