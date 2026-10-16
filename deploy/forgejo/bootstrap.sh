@@ -12,7 +12,7 @@ ENV_FILE="${TG_ENV_FILE:-/etc/treegent/env}"
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
 DOMAIN="${TG_FORGE_DOMAIN:?set TG_FORGE_DOMAIN in $ENV_FILE (e.g. git.nstern.de)}"
-INTERNAL="http://127.0.0.1:3001"          # compose binds here; Caddy fronts public
+INTERNAL="http://127.0.0.1:3999"          # compose binds here; Caddy fronts public
 
 # 1. wait for the forge to come up (first boot runs db migrations)
 echo "waiting for forgejo at $INTERNAL ..."
@@ -49,7 +49,7 @@ else
     TNAME="treegent-mgmt-$(date +%Y%m%d%H%M%S)"
     OUT="$(docker compose exec -u git -T server forgejo admin user \
         generate-access-token -u treegent-admin -t "$TNAME" \
-        -s write:admin,write:user 2>&1)" \
+        --scopes write:admin,write:user 2>&1)" \
         || { echo "token generation failed: $OUT" >&2; exit 1; }
     TOKEN="$(printf '%s' "$OUT" | grep -oE '[0-9a-f]{40}' | tail -1)"
     if [ -z "$TOKEN" ]; then
