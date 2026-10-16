@@ -35,8 +35,7 @@ else
     docker compose exec -u git -T server forgejo admin user create \
         --admin --username treegent-admin \
         --email "admin@${DOMAIN#git.}" \
-        --password "$PW" --must-change-password=false \
-        --random-password=false
+        --password "$PW" --must-change-password=false
     echo "admin password (store in the secrets service): $PW"
 fi
 
