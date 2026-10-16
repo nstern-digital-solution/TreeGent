@@ -39,17 +39,37 @@ else
     echo "admin password (store in the secrets service): $PW"
 fi
 
-# 3. mint the admin API token (skip when the connector is already armed;
-#    re-minting would orphan the previous token)
+# 3. dedicated service admin for the connector. The personal admin account
+#    (treegent-admin, created above or via the install wizard) is NEVER the
+#    identity behind the connector: provisioning uses its own admin account
+#    that exists solely to create users, never logs into the UI, and can be
+#    revoked/rotated independently (Felix, 2026-10-16). Forgejo has no
+#    narrower "create users only" scope, so the token is admin-capable —
+#    separation of identity is the control.
+SVC_PW="${FORGE_CONNECTOR_PW:-$(head -c 32 /dev/urandom | base64 | tr -d '/+' | head -c 28)}"
+if docker compose exec -u git -T server forgejo admin user list 2>/dev/null \
+        | awk '{print $2}' | grep -qx 'treegent-connector'; then
+    echo "connector service account already exists"
+else
+    echo "creating connector service account 'treegent-connector' (admin, no UI use)"
+    docker compose exec -u git -T server forgejo admin user create \
+        --admin --username treegent-connector \
+        --email "connector@${DOMAIN#git.}" \
+        --password "$SVC_PW" --must-change-password=false
+    echo "connector account password (store in the secrets service): $SVC_PW"
+fi
+
+# 4. mint the connector API token (skip when already armed; re-minting
+#    would orphan the previous token)
 if [ -n "${TG_CHAT_FORGE_TOKEN:-}" ]; then
     echo "connector token present in env — skipping token mint"
 else
-    echo "minting admin API token"
+    echo "minting connector API token (treegent-connector)"
     TOKEN_JSON="$(curl -sf -X POST \
-        "$INTERNAL/api/v1/users/treegent-admin/tokens" \
-        -u "treegent-admin:$PW" -H "Content-Type: application/json" \
+        "$INTERNAL/api/v1/users/treegent-connector/tokens" \
+        -u "treegent-connector:$SVC_PW" -H "Content-Type: application/json" \
         -d '{"name":"treegent-mgmt","scopes":["write:admin","write:user"]}')" \
-        || { echo "token mint failed — set FORGE_ADMIN_PW to the admin password and re-run" >&2; exit 1; }
+        || { echo "token mint failed — set FORGE_CONNECTOR_PW to the connector password and re-run" >&2; exit 1; }
     TOKEN="$(printf '%s' "$TOKEN_JSON" \
         | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha1"])')"
 fi
