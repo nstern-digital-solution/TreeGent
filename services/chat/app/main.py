@@ -9,6 +9,11 @@ app = FastAPI(title="TreeGent chat", version="0.1.0")
 @app.on_event("startup")
 async def _startup() -> None:
     await db.ensure_indexes()
+    # R80: every actor gets a forge account — including everyone created
+    # before the connector existed. Mark unprovisioned actors pending and
+    # run one sync; fully automatic, no command, no click.
+    from . import forge
+    await forge.backfill_missing()
 
 
 @app.get("/health")

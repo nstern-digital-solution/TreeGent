@@ -105,6 +105,22 @@ async def _provision_locked(actor: dict) -> None:
     r.raise_for_status()
 
 
+async def backfill_missing() -> int:
+    """Mark every actor without forge state as pending and sync once.
+
+    Runs at chat-service startup (R80): actors created before the connector
+    existed — or while the forge was down — get their accounts without any
+    manual step. Total and idempotent; no-op when the connector is disabled
+    or every actor is already provisioned.
+    """
+    if not settings.forge_url:
+        return 0
+    await db.actors.update_many(
+        {"forge.status": {"$exists": False}},
+        {"$set": {"forge.status": "pending", "forge.error": "backfill"}})
+    return await sync_pending()
+
+
 async def sync_pending() -> int:
     """Retry every actor stuck in forge.status=pending. Returns count fixed.
 

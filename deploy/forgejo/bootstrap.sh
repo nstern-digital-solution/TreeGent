@@ -12,7 +12,7 @@ ENV_FILE="${TG_ENV_FILE:-/etc/treegent/env}"
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
 DOMAIN="${TG_FORGE_DOMAIN:?set TG_FORGE_DOMAIN in $ENV_FILE (e.g. git.nstern.de)}"
-INTERNAL="http://127.0.0.1:3001"          # compose binds here; Caddy fronts public
+INTERNAL="http://127.0.0.1:3999"          # compose binds here; Caddy fronts public
 
 # 1. wait for the forge to come up (first boot runs db migrations)
 echo "waiting for forgejo at $INTERNAL ..."
