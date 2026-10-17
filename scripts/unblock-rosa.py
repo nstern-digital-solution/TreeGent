@@ -83,9 +83,9 @@ def main():
     # ---- rosa's actor id (mongo, stdlib) ----
     import pymongo  # noqa: present in the central venv
     mongo_url = env.get("TG_MONGO_URL", "mongodb://127.0.0.1:27017")
-    if mongo_url.startswith("mongodb+srv://"):
-        die("SRV mongo URL — set TG_MONGO_URL to the direct host form")
-    client = pymongo.MongoClient(mongo_url)
+    # mongodb+srv:// (Atlas) works — dnspython is in the central venv
+    # (the chat service connects to this same URL at runtime).
+    client = pymongo.MongoClient(mongo_url, serverSelectionTimeoutMS=8000)
     rosa = client.treegent.actors.find_one({"username": "agent-1"})
     if not rosa:
         die("no actor with username agent-1")
