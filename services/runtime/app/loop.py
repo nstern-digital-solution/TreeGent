@@ -67,49 +67,15 @@ def now():
 
 
 class Agent:
-    @staticmethod
-    def _resolve_workspace(actor: dict) -> str:
-        """Workspace dir, self-migrating across renames (R81).
-
-        Path = <root>/<username>. On rename the username changes, so the
-        old dir would be orphaned and the agent would silently restart
-        with amnesia. We resolve by priority:
-        1. current-username dir (normal case, incl. first run)
-        2. renamed_from marker: if old dir exists and new doesn't, MOVE it
-        3. infra_id dir (last resort: agent created before R81 whose
-           renamed_from was never set)
-        """
-        import os as _os
-        root = settings.workspace_root
-        uname = actor.get("username") or actor["_id"]
-        cur = _os.path.join(root, uname)
-        if _os.path.isdir(cur) and not _os.path.islink(cur):
-            return cur
-        # R81 rename migration
-        prev = actor.get("renamed_from")
-        if prev:
-            old = _os.path.join(root, prev)
-            if _os.path.isdir(old) and not _os.path.islink(old):
-                import shutil
-                _os.makedirs(root, exist_ok=True)
-                shutil.move(old, cur)
-                return cur
-        # pre-R81 actor without renamed_from: try infra handle
-        infra = actor.get("infra_id")
-        if infra:
-            inf_d = _os.path.join(root, infra)
-            if _os.path.isdir(inf_d) and not _os.path.islink(inf_d):
-                import shutil
-                shutil.move(inf_d, cur)
-                return cur
-        return cur
-
     def __init__(self, actor: dict, key: str):
         self.actor = actor
         self.id = actor["_id"]
         self.name = actor.get("display_name") or actor.get("username")
         self.key = key
-        self.workspace = self._resolve_workspace(actor)
+        # R82: workspace keyed by the STABLE username (operator ID) —
+        # renames of display names never touch the filesystem
+        self.workspace = os.path.join(settings.workspace_root,
+                                      actor.get("username", self.id))
         os.makedirs(self.workspace, exist_ok=True)
         self.svcs = T.Services(self.key, self.id)
         # the agent's life: one continuous transcript

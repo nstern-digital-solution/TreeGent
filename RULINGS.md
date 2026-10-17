@@ -300,3 +300,38 @@ Implementation notes:
   name becomes the username, `infra_id` carries the operator handle.
 - Existing `agent-N` actors: renamed via the new admin route at deploy
   time (one-shot), workspace symlinked, forge accounts renamed.
+
+## R82 — Identity model final: operator ID vs generated name (2026-10-17)
+
+Felix: "CAUSE THE ID IS SET BY ME BEFORE THE RANDOM NAME IS EVEN GENERATED!!!
+YOU JUST RENAMED THE OLD USERNAME FIELD INSTEAD of making the old field the
+id and adding a new display name field" + "YOU NOW HAVE ACTUALLY DESIGNED A
+COHERENT SYSTEM OF USER AND DISPLAY NAMES??? AND USE IT EVERYWHERE! ALSO
+YOU PASS THE CREDENTIALS TO THE AGENTS AND USE THE CORRECT EMAILS FOR
+FORGEJO ACCOUNTS!!!"
+
+RULING (FIRM, supersedes R81's username mechanics; R81's display/infra
+intent survives):
+- **username = the operator's stable ID** (agent-1). Set at creation,
+  NEVER renamed, used verbatim. Join key for Meteor users, workspace
+  directory key, VPS mapping. Immutable identity.
+- **name = the generated given name** (rosa). New field. @mentions
+  resolve against it (username also matches, legacy messages keep
+  working). Forge account mirrors it — the addressable handle in
+  issues/PRs.
+- **display_name = full persona name** (Rosa Marchetti). UI only.
+- **Forge accounts carry the agent's REAL mailbox address**
+  (rosa.marchetti@<TG_MAIL_DOMAIN>, persona-derived, same logic as the
+  mail service). @forge.treegent.invalid remains only as the no-domain
+  fallback.
+- **Credential handoff**: provisioning mints a scoped API token
+  (write:repository, write:issue, read:user) and writes it into the
+  agent's own secrets scope as `forge/token` (url, token, username).
+  Passwords never stored — tokens are revocable and scope-limited.
+- backfill_missing() stamps `name` on legacy agents and refreshes
+  email/full_name on existing forge accounts at startup.
+- The rename endpoint (PUT /actors/{id}/username) is RETIRED from the
+  contract — stable IDs are not renamed. (R81's rename machinery is
+  dead code to be removed.)
+
+Verification: chat suite 44 passed (live uvicorn + fresh mongod).

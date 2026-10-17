@@ -20,11 +20,12 @@ KINDS = ("human", "agent")
 class ActorIn(BaseModel):
     # R69: usernames become filesystem workspaces (<root>/<username>) —
     # constrain to a path-safe charset (../ escapes were possible)
-    # R81: humans need a username; agents may pass "" (generated name)
-    # or an agent-N infra handle (moved to infra_id, name generated).
-    username: str = Field(default="", max_length=32,
-                          pattern=r"^$|^[a-z0-9_.-]{2,32}$")
-    display_name: str = Field(min_length=1, max_length=64)
+    # R82 (supersedes R81): username = the OPERATOR's stable ID (agent-N),
+    # set at creation, NEVER renamed. The generated persona name lives in
+    # display_name. Agents may omit display_name — it is generated.
+    username: str = Field(min_length=2, max_length=32,
+                          pattern=r"^[a-z0-9_.-]{2,32}$")
+    display_name: str = Field(default="", max_length=64)
     kind: str = "human"
     parent_id: str | None = None
     host_id: str | None = None   # R53: agent host assignment
@@ -70,6 +71,7 @@ def pub(a: dict) -> dict:
         "display_name": a["display_name"],
         "kind": a["kind"],
         "org": a.get("org", {"parent_id": None, "ancestors": [], "depth": 0}),
+        "name": a.get("name") or "",            # R82: generated given name
         "infra_id": a.get("infra_id"),          # R81: operator VPS handle
         "created_at": a.get("created_at"),
         "extra": a.get("extra", {}),
@@ -81,18 +83,12 @@ async def create_actor(body: ActorIn, actor: dict = Depends(ORG_ADMIN_BOOTSTRAP)
     if body.kind not in KINDS:
         raise HTTPException(400, f"kind must be one of {KINDS}")
     uname = body.username.lower()
-    # R81: the agent's USERNAME is its generated given name — what people
-    # @mention and what appears in forge issues/PRs. An operator-supplied
-    # "agent-N" handle is an infra label: moved to infra_id (VPS mapping),
-    # never used as the username.
+    # R82: username is the operator's stable ID — used verbatim. The
+    # persona (generated name) lands in display_name / name.
     persona = None
     if body.kind == "agent":
-        if _is_infra_handle(body.username):
-            body.infra_id = body.infra_id or body.username
         from treegent_common.identity import assign_identity
         persona = assign_identity()
-        if _is_infra_handle(body.username) or not body.username:
-            uname = await _persona_username(persona)
     # R15 (review): the regex permits a literal ".." — join(root, username)
     # then escapes the per-agent workspace root. Reject any username whose
     # path segments are not plain.
@@ -113,12 +109,12 @@ async def create_actor(body: ActorIn, actor: dict = Depends(ORG_ADMIN_BOOTSTRAP)
         "created_at": idgen.now(),
     }
     if body.kind == "agent":
-        # R49+R81: one persona draw per agent. Username = its given name,
-        # display_name = full persona name, infra_id = operator handle.
+        # R49+R82: persona drives the DISPLAY name only. username stays
+        # the operator's stable ID; `name` = generated given name
+        # (lowercase, addressable, used for forge + mentions).
         doc["persona"] = persona
-        doc["display_name"] = persona["persona_name"]
-        if body.infra_id:
-            doc["infra_id"] = body.infra_id
+        doc["display_name"] = body.display_name or persona["persona_name"]
+        doc["name"] = await _persona_username(persona)
         if body.host_id:
             doc["host_id"] = body.host_id   # R53: claimed by that host's runtime
     await db.actors.insert_one(doc)
@@ -255,10 +251,11 @@ async def delete_actor(actor_id: str, actor: dict = Depends(ORG_ADMIN)):
 
 
 class RenameIn(BaseModel):
-    # R81: humans need a username; agents may pass "" (generated name)
-    # or an agent-N infra handle (moved to infra_id, name generated).
-    username: str = Field(default="", max_length=32,
-                          pattern=r"^$|^[a-z0-9_.-]{2,32}$")
+    # R82 (supersedes R81): username = the OPERATOR's stable ID (agent-N),
+    # set at creation, NEVER renamed. The generated persona name lives in
+    # display_name. Agents may omit display_name — it is generated.
+    username: str = Field(min_length=2, max_length=32,
+                          pattern=r"^[a-z0-9_.-]{2,32}$")
 
 
 @router.put("/{actor_id}/username")

@@ -97,11 +97,12 @@ async def test_provision_accepts_internal_doc_shape_r11(fake_forge):
 
 @pytest.mark.asyncio
 async def test_provision_creates_user(fake_forge):
+    forge.settings.mail_domain = "e.nstern.de"   # R82: real mailbox domain
     actor = {"_id": "agt_1", "username": "rosa-m", "forge": {}}
     await forge.provision(actor)
     assert "rosa-m" in fake_forge.users
     body = fake_forge.users["rosa-m"]
-    assert body["email"] == "rosa-m@forge.treegent.invalid"
+    assert "@" in body["email"] and "treegent.invalid" not in body["email"]  # R82: real mailbox domain
     assert body["must_change_password"] is False
     assert body["send_notify"] is False
     assert body["login_name"] == "agt_1"
@@ -124,10 +125,13 @@ async def test_provision_idempotent_on_exists(fake_forge, monkeypatch):
     monkeypatch.setattr(forge.db, "actors", type("C", (), {
         "update_one": staticmethod(cap_update)}))
 
+    forge.settings.mail_domain = "e.nstern.de"   # R82: real mailbox domain
     actor = {"_id": "agt_1", "username": "rosa-m", "forge": {}}
     await forge.provision(actor)
     await forge.provision(actor)     # second run: 422 -> success
-    assert len(calls) == 2
+    # R82: first run also mints a token — count only user creates
+    assert len([c for c in calls if c.endswith("/admin/users")]) == 2
+    assert any("/tokens" in c for c in calls)
     assert "rosa-m" in fake_forge.users
     assert all(w[1]["$set"]["forge.status"] == "ok" for w in writes)
     assert len(writes) == 2
