@@ -28,11 +28,16 @@ import urllib.error
 import urllib.request
 
 ENV_FILE = os.environ.get("ENV_FILE", "/etc/treegent/env")
-FORGE_API = os.environ.get("TG_FORGE_LOCAL",
-                           "http://127.0.0.1:3001/api/v1") + "/api/v1"
+FORGE_PUBLIC = os.environ.get("TG_FORGE_PUBLIC", "https://git.nstern.de")
+# Prod fact (2026-10-17): the container's local port (127.0.0.1:3001)
+# does not serve /repos/migrate (plain-text 404 — no API router), while
+# the public URL demonstrably reaches it. Default to the public URL;
+# TG_FORGE_API / TG_FORGE_LOCAL override for lab rehearsals.
+FORGE_API = (os.environ.get("TG_FORGE_API")
+             or os.environ.get("TG_FORGE_LOCAL")
+             or FORGE_PUBLIC) + "/api/v1"
 SECRETS = os.environ.get("TG_SECRETS_URL",
                            "http://127.0.0.1:8003")
-FORGE_PUBLIC = os.environ.get("TG_FORGE_PUBLIC", "https://git.nstern.de")
 COMPOSE_DIR = os.environ.get("COMPOSE_DIR",
                              "/opt/TreeGent/deploy/forgejo")
 STAMP = subprocess.run(["date", "+%H%M%S"], capture_output=True,
@@ -168,7 +173,8 @@ def main():
     }
     if gh:
         payload["auth_token"] = gh
-    print("migrating (clone + issues + PRs — takes a minute)…")
+    what = "code + issues + PRs" if full else "code only (no GitHub token)"
+    print(f"migrating ({what} — takes a minute)…")
     code, body = http("POST", f"{FORGE_API}/repos/migrate", headers=ah,
                       body=payload, timeout=1800)
     if code != 201:
