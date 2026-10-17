@@ -116,14 +116,20 @@ def main():
                 break
             print(f"github token: secret '{s['name']}' invalid ({c3})")
     if not gh:
-        die("no valid GitHub token in Rosa's secrets. Create a classic PAT "
-            "(no scopes, github.com/settings/tokens) and re-run: "
-            "GH=ghp_xxx .venv/bin/python3 scripts/unblock-rosa.py")
-    c, _ = http("GET", "https://api.github.com/rate_limit",
-                headers={"Authorization": f"Bearer {gh}",
-                         "User-Agent": "TreeGent-migrate"})
-    if c != 200:
-        die(f"provided GH token invalid ({c})")
+        print("no GitHub token (suspended-account PATs are dead) — "
+              "migrating CODE ONLY; old issues/PRs stay readable on "
+              "github.com. To import them later: re-run with GH=<live "
+              "token> once repos exist (use scripts/import-github-issues "
+              "or the migrate API).")
+    else:
+        c, _ = http("GET", "https://api.github.com/rate_limit",
+                    headers={"Authorization": f"Bearer {gh}",
+                             "User-Agent": "TreeGent-migrate"})
+        if c != 200:
+            print(f"GH token invalid ({c}) — falling back to CODE ONLY")
+            gh = ""
+        else:
+            print("GitHub token valid — full migration (issues + PRs)")
 
     # ---- 2. mint forge tokens via container CLI ----
     def mint(user, tname, scopes):
@@ -149,17 +155,19 @@ def main():
                       f"{FORGE_API}/repos/treegent-admin/TreeGent",
                       headers=ah)
     print(f"pre-clean: {code} (404 = nothing there)")
+    full = bool(gh)  # with a live token: bring issues/PRs/comments too
     payload = {
         "clone_addr": "https://github.com/nstern-digital-solution/TreeGent.git",
-        "auth_token": gh,
         "mirror": False,
         "repo_owner": "treegent-admin",
         "repo_name": "TreeGent",
         "private": True,
-        "issues": True, "pull_requests": True, "labels": True,
-        "milestones": True, "releases": True, "comments": True,
+        "issues": full, "pull_requests": full, "labels": full,
+        "milestones": full, "releases": full, "comments": full,
         "wiki": False, "lfs": False, "service": "github",
     }
+    if gh:
+        payload["auth_token"] = gh
     print("migrating (clone + issues + PRs — takes a minute)…")
     code, body = http("POST", f"{FORGE_API}/repos/migrate", headers=ah,
                       body=payload, timeout=1800)
