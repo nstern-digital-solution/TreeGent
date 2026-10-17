@@ -41,7 +41,7 @@ export function Admin() {
     Meteor.call('tg.createActor', username.trim(), password, display.trim(), kind,
       parent || null, hostId || null, (err) => {
         if (err) return setMsg(err.message);
-        setMsg(`created ${username.trim()}`);
+        setMsg(username.trim() ? `created ${username.trim()}` : 'agent created — name generated');
         setUsername(''); setPassword(''); setDisplay(''); setKind('human'); setParent(''); setHostId('');
       });
   };
@@ -52,7 +52,7 @@ export function Admin() {
     <div className="page">
       <h2>Admin — users &amp; actors</h2>
       <form className="new-user" onSubmit={create}>
-        <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="username" required />
+        <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder={kind === 'agent' ? 'stable ID e.g. agent-3 (name is generated)' : 'username'} required />
         <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="password" required />
         <input value={display} onChange={(e) => setDisplay(e.target.value)} placeholder="display name" required />
         <select value={kind} onChange={(e) => setKind(e.target.value)}>
@@ -85,7 +85,7 @@ export function Admin() {
       <ul>
         {actors.filter((a) => a.kind === 'agent').map((a) => (
           <li key={a._id} className="agent-key-row">
-            <span>{a.display_name} ({a.username})</span>
+            <span>{a.display_name} (@{a.username}{a.infra_id ? ` · ${a.infra_id}` : ''})</span>
             <select
               value={a.host_id || ''}
               onChange={(e) => Meteor.callAsync('tg.setAgentHost', a._id, e.target.value)

@@ -33,7 +33,11 @@ async def _mentioned_agents(conv: dict, body: str) -> list[str]:
     if not names:
         return []
     out = []
-    async for a in db.actors.find({"kind": "agent", "username": {"$in": list(names)}}):
+    # R82: mentions resolve against the GENERATED name (rosa), not the
+    # stable ID (agent-1). Query both so old messages keep resolving.
+    async for a in db.actors.find({"kind": "agent",
+                                   "$or": [{"name": {"$in": list(names)}},
+                                           {"username": {"$in": list(names)}}]}):
         if a["_id"] in conv["members"]:
             out.append(a["_id"])
     return out

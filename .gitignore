@@ -25,3 +25,6 @@ browser-profile/
 *.egg-info/
 build/
 dist/
+
+# lab/container sqlite must never be tracked (blocked a prod git pull once)
+deploy/forgejo/data/

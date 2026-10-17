@@ -72,8 +72,19 @@ class Agent:
         self.id = actor["_id"]
         self.name = actor.get("display_name") or actor.get("username")
         self.key = key
+        # R82: workspace keyed by the STABLE username (operator ID) —
+        # renames of display names never touch the filesystem. Legacy
+        # fallback: agents that lived through the R81 experiment may have
+        # a dir keyed by their generated name — adopt it (move) so no
+        # agent ever starts with amnesia.
         self.workspace = os.path.join(settings.workspace_root,
                                       actor.get("username", self.id))
+        if not os.path.isdir(self.workspace):
+            legacy = os.path.join(settings.workspace_root,
+                                  actor.get("name") or "")
+            if legacy and os.path.isdir(legacy) and not os.path.islink(legacy):
+                import shutil as _shutil
+                _shutil.move(legacy, self.workspace)
         os.makedirs(self.workspace, exist_ok=True)
         self.svcs = T.Services(self.key, self.id)
         # the agent's life: one continuous transcript

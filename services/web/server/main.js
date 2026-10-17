@@ -520,6 +520,12 @@ Meteor.methods({
   async 'tg.createActor'(username, password, display, kind, parentId, hostId) {
     check(username, String); check(password, String); check(display, String);
     check(kind, String);
+    // R82: username = operator's stable ID — always required (agents
+    // get a generated DISPLAY name; the ID is never renamed).
+    if (!username.trim()) {
+      throw new Meteor.Error('username-required', 'username (stable ID) is required');
+    }
+    username = username.trim();
     if (hostId !== undefined && hostId !== null) check(hostId, String);
     const caller = await Meteor.userAsync();
     if (!caller || !caller.isAdmin) throw new Meteor.Error('forbidden', 'admin only');

@@ -257,3 +257,105 @@ Proofs: chat suite **33 passed** (26 baseline + 7 new) against a live
 uvicorn + disposable mongod; connector unit tests cover username mapping,
 password alphabet, create, idempotent-422, forge-down totality,
 disabled-by-default, pending retry via /internal/forge/sync.
+
+## R81 — Agent identity: generated names, `agent-N` as infra handle (2026-10-16)
+
+Felix: "I want to have her name! If we have many agents we need to have a
+identifier like agent-1 which is setup by me and helps me know which agent
+belongs to which vps but I will never say agent-1 do x and agent-32 do y!
+This is stupid, the name i use is the one randomly generated and i need to
+be able to use it in issues and pr too of course"
+
+RULING (FIRM):
+- **Generated name = the username.** Every agent gets a randomly generated
+  given-name username (`rosa`, `mila`, …). This is what Felix addresses
+  agents by: chat `@mentions`, forge issues/PRs, mailbox local-part,
+  workspace dir. No one is ever asked to say "agent-1 do x".
+- **`agent-N` is an infra handle, owned by Felix.** It stays as a separate
+  operator-set field (`infra_id`) shown in Hosts/admin views for VPS
+  mapping — it is NOT the username and never addressed.
+- **Forge account = the name.** Forge username mirrors the TreeGent
+  username (R80); with R81 the username IS the generated name, so
+  `@rosa` in a forge issue works because the account is `rosa`.
+- Renames: admin may rename an agent; rename propagates (actor doc,
+  forge account via admin API rename, workspace path pinned via
+  `infra_id`-anchored symlink, mailbox migration heals itself at mail
+  startup per R49/R52). Old forge handles 307-redirect (verified in
+  Forgejo 12.0.4 lab), so existing issue/PR references keep resolving.
+
+Name generation: `first [SYLLABLES]` from a curated given-name pool,
+title-case for display, plain lowercase username. Collision-checked at
+creation against Mongo; retry with next candidate. Generated names are
+stable — stored on the actor doc at creation, never regenerated.
+
+Lab-verified (Forgejo 12.0.4, scratch/forgejo-lab):
+- `POST /api/v1/admin/users` with `full_name` → 201
+- `PATCH /api/v1/admin/users/{u}` `{"full_name": ...}` → 200
+- `POST /api/v1/admin/users/{u}/rename` `{"new_username": ...}` → 204;
+  old handle 307s. Rename endpoint exists in Forgejo 12.
+
+Implementation notes:
+- `ActorIn.username` remains a plain identifier field; agents created via
+  host provisioning no longer force `agent-N` usernames — the generated
+  name becomes the username, `infra_id` carries the operator handle.
+- Existing `agent-N` actors: renamed via the new admin route at deploy
+  time (one-shot), workspace symlinked, forge accounts renamed.
+
+## R82 — Identity model final: operator ID vs generated name (2026-10-17)
+
+Felix: "CAUSE THE ID IS SET BY ME BEFORE THE RANDOM NAME IS EVEN GENERATED!!!
+YOU JUST RENAMED THE OLD USERNAME FIELD INSTEAD of making the old field the
+id and adding a new display name field" + "YOU NOW HAVE ACTUALLY DESIGNED A
+COHERENT SYSTEM OF USER AND DISPLAY NAMES??? AND USE IT EVERYWHERE! ALSO
+YOU PASS THE CREDENTIALS TO THE AGENTS AND USE THE CORRECT EMAILS FOR
+FORGEJO ACCOUNTS!!!"
+
+RULING (FIRM, supersedes R81's username mechanics; R81's display/infra
+intent survives):
+- **username = the operator's stable ID** (agent-1). Set at creation,
+  NEVER renamed, used verbatim. Join key for Meteor users, workspace
+  directory key, VPS mapping. Immutable identity.
+- **name = the generated given name** (rosa). New field. @mentions
+  resolve against it (username also matches, legacy messages keep
+  working). Forge account mirrors it — the addressable handle in
+  issues/PRs.
+- **display_name = full persona name** (Rosa Marchetti). UI only.
+- **Forge accounts carry the agent's REAL mailbox address**
+  (rosa.marchetti@<TG_MAIL_DOMAIN>, persona-derived, same logic as the
+  mail service). @forge.treegent.invalid remains only as the no-domain
+  fallback.
+- **Credential handoff**: provisioning mints a scoped API token
+  (write:repository, write:issue, read:user) and writes it into the
+  agent's own secrets scope as `forge/token` (url, token, username).
+  Passwords never stored — tokens are revocable and scope-limited.
+- backfill_missing() stamps `name` on legacy agents and refreshes
+  email/full_name on existing forge accounts at startup.
+- The rename endpoint (PUT /actors/{id}/username) is RETIRED from the
+  contract — stable IDs are not renamed. (R81's rename machinery is
+  dead code to be removed.)
+
+Verification: chat suite 44 passed (live uvicorn + fresh mongod).
+
+## R82 review round (subagent, 2026-10-17) — 4 blockers fixed
+
+1. R81 rename endpoint REMOVED (retired by ruling; it still wrote
+   renamed_from — the loaded gun that broke the Meteor join).
+2. Forge account now mirrors the GENERATED name (rosa), stable ID only
+   as legacy fallback — @rosa resolves in issues/PRs. Tests updated to
+   pin the correct contract.
+3. Stale R81 workspace-migration test deleted (broke runtime suite at
+   collection). Runtime suite: 139 passed + 3 skipped.
+4. Workspace legacy-name adoption: an agent finding no dir for its
+   stable ID but one for its generated name (R81-era) MOVES it — no
+   silent amnesia.
+
+Risks fixed: name-collision uniqueness now checks the NAME field (was
+username — two rosas both passed); credential handoff fires for existing
+accounts (422 path + backfill, agents only) with pending-state + logging
+instead of silent swallow; resolve-actor matches name then username
+(runtime DMs by generated name work); Admin UI + tg.createActor require
+the stable username for agents (no half-created principals).
+Suites: chat 49 passed (live uvicorn + fresh mongod), runtime 139+3.
+Known residual (accepted): no JS test pins the Meteor myActor join —
+the Python suites cannot see it; unbrick script does not rename forge
+accounts back (forge handles rosa/greta stay — correct per ruling).

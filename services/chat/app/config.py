@@ -17,6 +17,9 @@ class Settings(BaseSettings):
                        validation_alias=AliasChoices("TG_CHAT_FORGE_URL", "TG_FORGE_URL"))
     forge_token: str = Field(default="",
                          validation_alias=AliasChoices("TG_CHAT_FORGE_TOKEN", "TG_FORGE_TOKEN"))
+    # R82: forge accounts carry the agent's real mailbox address
+    mail_domain: str = Field(default="",
+                        validation_alias=AliasChoices("TG_MAIL_DOMAIN"))
 
     model_config = {"env_prefix": "TG_CHAT_", "env_file": ".env", "extra": "ignore"}
 
