@@ -29,7 +29,10 @@ async def org_weights(_: None = Depends(require_service)):
 
 @router.get("/resolve-actor")
 async def resolve_actor(username: str, _: None = Depends(require_service)):
-    a = await db.actors.find_one({"username": username}, {"_id": 1})
+    """R82: resolve by generated name (rosa) first, then stable username
+    (agent-1) — both are addressable; runtime DMs by name must work."""
+    a = await db.actors.find_one({"name": username}, {"_id": 1}) or \
+        await db.actors.find_one({"username": username}, {"_id": 1})
     return {"actor_id": a["_id"] if a else None}
 
 

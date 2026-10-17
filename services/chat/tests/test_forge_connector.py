@@ -66,8 +66,9 @@ def fake_forge(monkeypatch):
 
 
 def test_username_mapping():
-    assert forge._forge_username({"username": "Rosa.M"}) == "rosa-m"
-    assert forge._forge_username({"username": "agent_9"}) == "agent-9"
+    # R82: forge account mirrors the GENERATED name; stable ID fallback
+    assert forge._forge_username({"name": "Rosa", "username": "agent-1"}) == "rosa"
+    assert forge._forge_username({"username": "agent_9"}) == "agent-9"  # legacy: no name
     assert forge._forge_username({"username": ""}) == "actor"
     u = forge._forge_username({"username": "x" * 60})
     assert len(u) == 40 and u == "x" * 40
@@ -98,7 +99,7 @@ async def test_provision_accepts_internal_doc_shape_r11(fake_forge):
 @pytest.mark.asyncio
 async def test_provision_creates_user(fake_forge):
     forge.settings.mail_domain = "e.nstern.de"   # R82: real mailbox domain
-    actor = {"_id": "agt_1", "username": "rosa-m", "forge": {}}
+    actor = {"_id": "agt_1", "name": "rosa-m", "username": "agent-1", "forge": {}}
     await forge.provision(actor)
     assert "rosa-m" in fake_forge.users
     body = fake_forge.users["rosa-m"]
@@ -126,15 +127,16 @@ async def test_provision_idempotent_on_exists(fake_forge, monkeypatch):
         "update_one": staticmethod(cap_update)}))
 
     forge.settings.mail_domain = "e.nstern.de"   # R82: real mailbox domain
-    actor = {"_id": "agt_1", "username": "rosa-m", "forge": {}}
+    actor = {"_id": "agt_1", "name": "rosa-m", "username": "agent-1", "forge": {}}
     await forge.provision(actor)
     await forge.provision(actor)     # second run: 422 -> success
     # R82: first run also mints a token — count only user creates
     assert len([c for c in calls if c.endswith("/admin/users")]) == 2
     assert any("/tokens" in c for c in calls)
     assert "rosa-m" in fake_forge.users
-    assert all(w[1]["$set"]["forge.status"] == "ok" for w in writes)
-    assert len(writes) == 2
+    assert all(w[1]["$set"].get("forge.status", "ok") == "ok" for w in writes)
+    # 2 provision updates + R82 handoff bookkeeping per run
+    assert len([w for w in writes if "forge.status" in w[1]["$set"]]) == 2
 
 
 @pytest.mark.asyncio

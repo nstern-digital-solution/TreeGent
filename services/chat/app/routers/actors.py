@@ -50,16 +50,17 @@ def _is_infra_handle(u: str | None) -> bool:
 
 
 async def _persona_username(persona: dict) -> str:
-    """R81: username = persona's given name, lowercased. Uniqueness by
-    suffixing (mila2, mila3) — never re-draw the persona; the name people
-    address must be the name the agent calls itself."""
+    """R82: generated given name (rosa), stored in the `name` field.
+    Uniqueness checked against NAME — R81 checked username, so two agents
+    drawn as 'rosa' both passed. Suffix on collision (rosa2); never
+    re-draw the persona."""
     import re as _re
     first = (persona.get("persona_name") or "agent").split()[0].lower()
     base = _re.sub(r"[^a-z0-9]", "", first) or "agent"
-    if not await db.actors.find_one({"username": base}):
+    if not await db.actors.find_one({"name": base}):
         return base
     n = 2
-    while await db.actors.find_one({"username": f"{base}{n}"}):
+    while await db.actors.find_one({"name": f"{base}{n}"}):
         n += 1
     return f"{base}{n}"
 
@@ -248,63 +249,3 @@ async def delete_actor(actor_id: str, actor: dict = Depends(ORG_ADMIN)):
                                           {"$pull": {"members": actor_id}})
     await db.actors.delete_one({"_id": actor_id})
     return {"deleted": actor_id}
-
-
-class RenameIn(BaseModel):
-    # R82 (supersedes R81): username = the OPERATOR's stable ID (agent-N),
-    # set at creation, NEVER renamed. The generated persona name lives in
-    # display_name. Agents may omit display_name — it is generated.
-    username: str = Field(min_length=2, max_length=32,
-                          pattern=r"^[a-z0-9_.-]{2,32}$")
-
-
-@router.put("/{actor_id}/username")
-async def rename_actor(body: RenameIn, actor_id: str,
-                       actor: dict = Depends(ORG_ADMIN)):
-    """R81: rename an agent — the generated name is the addressable
-    username. Propagates: actor doc, forge account (admin API rename,
-    old handle 307-redirects so existing issue/PR refs keep resolving),
-    and pins the old workspace via symlink (runtime keeps resolving the
-    actor's ORIGINAL workspace path until restart re-reads username)."""
-    import re as _re
-    new = body.username.lower()
-    if _is_infra_handle(new):
-        raise HTTPException(400, "agent-N style names are infra handles "
-                                 "(infra_id), not usernames")
-    if new in (".", "..") or any(s in (".", "..") for s in new.split("/")) \
-            or new.startswith("."):
-        raise HTTPException(400, "username must not contain path segments")
-    if await db.actors.find_one({"username": new}):
-        raise HTTPException(409, "username taken")
-    tgt = await db.actors.find_one({"_id": actor_id})
-    if not tgt:
-        raise HTTPException(404, "no such actor")
-    old_uname = tgt["username"]
-
-    await db.actors.update_one(
-        {"_id": actor_id},
-        {"$set": {"username": new,
-                  "renamed_from": old_uname, "renamed_at": idgen.now()}})
-
-    # forge rename (best-effort; recorded on the doc if it fails so
-    # sync_pending-style retry can pick it up)
-    from .. import forge
-    try:
-        ok = await forge.rename_account(old_uname, new)
-        await db.actors.update_one(
-            {"_id": actor_id},
-            {"$set": {"forge.username": new,
-                      **({"forge.rename_status": "ok"} if ok else
-                         {"forge.rename_status": "pending",
-                          "forge.error": "rename not confirmed"})}})
-    except Exception as e:  # noqa: BLE001 — rename must not fail the API
-        await db.actors.update_one(
-            {"_id": actor_id},
-            {"$set": {"forge.rename_status": "pending",
-                      "forge.error": f"rename: {str(e)[:200]}"}})
-
-    # workspace pinning: chat runs central; runtime hosts own workspaces.
-    # We cannot mkdir on agent hosts from here — the runtime's Agent init
-    # already re-derives workspace from username and SOUL files carry over
-    # because the directory is renamed by the runtime host manager.
-    return {"ok": True, "username": new, "renamed_from": old_uname}

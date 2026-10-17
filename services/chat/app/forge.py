@@ -34,12 +34,12 @@ _PW_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
 
 
 def _forge_username(actor: dict) -> str:
-    """Forgejo username for an actor: the TreeGent username, lowercased.
-
-    Forgejo rules: [a-z0-9._-], max 40. TreeGent usernames are already
-    lowercased ascii at creation (actors.py) but be defensive anyway.
+    """Forgejo username for an actor (R82): the GENERATED name (rosa) —
+    the handle the operator addresses in issues/PRs. Falls back to the
+    stable username for legacy actors without `name` (pre-R82). Forgejo
+    charset [a-z0-9._-], max 40.
     """
-    u = (actor.get("username") or "").lower()
+    u = (actor.get("name") or actor.get("username") or "").lower()
     u = re.sub(r"[^a-z0-9-]", "-", u).strip("-") or "actor"
     return u[:40]
 
@@ -123,6 +123,9 @@ async def _provision_locked(actor: dict) -> None:
             {"_id": actor["_id"]},
             {"$set": {"forge.status": "ok",
                       "forge.username": uname}})
+        # R82: existing accounts get credentials too (review: handoff
+        # only fired on 201 — pre-existing actors never got tokens)
+        await _handoff_credentials(actor, uname, "")
         return
     r.raise_for_status()
 
@@ -145,13 +148,22 @@ async def backfill_missing() -> int:
         if first:
             await db.actors.update_one({"_id": a["_id"]},
                                        {"$set": {"name": first}})
-    # R82: existing forge accounts get real emails + full names refreshed
-    async for a in db.actors.find({"forge.status": "ok"}):
+    # R82: existing AGENT forge accounts get real emails + full names
+    # refreshed and (once) their credential handoff. Humans excluded —
+    # their PATCH would clobber manually-set addresses (review risk).
+    import logging as _logging
+    _log = _logging.getLogger("treegent.forge")
+    async for a in db.actors.find({"forge.status": "ok", "kind": "agent",
+                                   "forge.handoff": {"$ne": "ok"}}):
         uname = a.get("forge", {}).get("username") or _forge_username(a)
-        await _api("PATCH", f"/admin/users/{uname}", json={
+        rr = await _api("PATCH", f"/admin/users/{uname}", json={
             "full_name": a.get("display_name") or "",
             "email": f"{_agent_mailbox_local(a)}@{settings.mail_domain or 'forge.treegent.invalid'}",
         })
+        if rr.status_code not in (200, 204):
+            _log.warning("forge profile refresh %s -> %s", uname,
+                         rr.status_code)
+        await _handoff_credentials(a, uname, "")
     await db.actors.update_many(
         {"forge.status": {"$exists": False}},
         {"$set": {"forge.status": "pending", "forge.error": "backfill"}})
@@ -187,25 +199,52 @@ async def _handoff_credentials(actor: dict, uname: str, password: str) -> None:
     Password is NOT stored — tokens are revocable and scope-limited.
     Best-effort: failures recorded on the actor, never raise.
     """
+    import logging
+    log = logging.getLogger("treegent.forge")
     try:
-        tok = None
         import re as _re2
         suffix = _re2.sub(r"[^a-z0-9]", "", actor["_id"].lower())[-8:] or "agent"
+        tname = f"treegent-agent-{suffix}"
         r = await _api("POST", f"/admin/users/{uname}/tokens",
-                       json={"name": f"treegent-agent-{suffix}",
+                       json={"name": tname,
                              "scopes": ["write:repository", "write:issue",
                                         "read:user"]})
-        if r.status_code == 201:
-            tok = r.json().get("sha1")
-        if tok:
-            await _secrets_put(
-                actor["_id"],
-                "forge/token",
-                {"url": settings.forge_url, "token": tok,
-                 "username": uname,
-                 "note": "auto-provisioned forge account (R82)"})
-    except Exception:  # noqa: BLE001 — handoff must never break provisioning
-        pass
+        if r.status_code == 422:
+            # token name exists from a previous attempt — cannot re-read
+            # it; record and surface instead of pretending success
+            await db.actors.update_one(
+                {"_id": actor["_id"]},
+                {"$set": {"forge.handoff": "token-exists",
+                          "forge.handoff_token": tname}})
+            log.warning("forge token %s exists for %s; secret not rewritten",
+                        tname, uname)
+            return
+        if r.status_code != 201:
+            await db.actors.update_one(
+                {"_id": actor["_id"]},
+                {"$set": {"forge.handoff": "pending",
+                          "forge.handoff_error":
+                          f"mint {r.status_code}: {r.text[:120]}"}})
+            return
+        tok = r.json().get("sha1")
+        await _secrets_put(
+            actor["_id"],
+            "forge/token",
+            {"url": settings.forge_url, "token": tok,
+             "username": uname,
+             "note": "auto-provisioned forge account (R82)"})
+        await db.actors.update_one(
+            {"_id": actor["_id"]},
+            {"$set": {"forge.handoff": "ok"}})
+    except Exception as e:  # noqa: BLE001 — never break provisioning
+        log.warning("forge credential handoff failed for %s: %s", uname, e)
+        try:
+            await db.actors.update_one(
+                {"_id": actor["_id"]},
+                {"$set": {"forge.handoff": "pending",
+                          "forge.handoff_error": str(e)[:200]}})
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def _secrets_put(owner_id: str, name: str, fields: dict) -> None:

@@ -52,7 +52,7 @@ export function Admin() {
     <div className="page">
       <h2>Admin — users &amp; actors</h2>
       <form className="new-user" onSubmit={create}>
-        <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder={kind === 'agent' ? 'infra handle (agent-N), optional — name is generated' : 'username'} required={kind === 'human'} />
+        <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder={kind === 'agent' ? 'stable ID e.g. agent-3 (name is generated)' : 'username'} required />
         <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="password" required />
         <input value={display} onChange={(e) => setDisplay(e.target.value)} placeholder="display name" required />
         <select value={kind} onChange={(e) => setKind(e.target.value)}>

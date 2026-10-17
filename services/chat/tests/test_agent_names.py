@@ -22,6 +22,9 @@ class _FakeCol:
         self.by_uname = {}
 
     async def find_one(self, q):
+        if "name" in q:
+            d = next((x for x in self.docs if x.get("name") == q["name"]), None)
+            return dict(d) if d else None
         if "username" in q:
             d = self.by_uname.get(q["username"])
             return dict(d) if d else None
@@ -65,36 +68,27 @@ def test_infra_handle_detection():
 
 
 @pytest.mark.asyncio
-async def test_agent_with_infra_handle_gets_generated_name(fake_db):
-    """R81: 'agent-1' as input -> generated name username, handle kept as
-    infra_id, persona first-name == username."""
+async def test_agent_username_is_stable_id(fake_db):
+    """R82 (supersedes R81): username passes through verbatim as the
+    operator's stable ID; the generated persona name is NOT the username.
+    Callers address the agent by `name` (rosa), identify by username."""
     from app.routers import actors as A
-    from pydantic import ValidationError
+    from treegent_common.identity import assign_identity
 
-    class _Boot:
-        pass
-
-    body = A.ActorIn(username="agent-1", display_name="Agent", kind="agent")
-    # run the body of create_actor without the FastAPI deps
-    uname = body.username.lower()
-    persona = None
-    if body.kind == "agent":
-        if A._is_infra_handle(body.username):
-            body.infra_id = body.infra_id or body.username
-        from treegent_common.identity import assign_identity
-        persona = assign_identity()
-        if A._is_infra_handle(body.username) or not body.username:
-            uname = await A._persona_username(persona)
-    assert uname != "agent-1"
-    assert A._is_infra_handle(body.infra_id)
+    body = A.ActorIn(username="agent-1", display_name="", kind="agent")
+    persona = assign_identity()
+    uname = body.username.lower()          # verbatim — no rewriting
+    assert uname == "agent-1"
+    name = await A._persona_username(persona)
     first = persona["persona_name"].split()[0].lower()
-    assert uname.rstrip("0123456789") == first
+    assert name.rstrip("0123456789") == first
+    assert uname != name                   # ID and name are distinct fields
 
 
 @pytest.mark.asyncio
 async def test_persona_username_suffixes_on_collision(fake_db):
     from app.routers import actors as A
-    await fake_db.insert_one({"_id": "agt_x", "username": "mila"})
+    await fake_db.insert_one({"_id": "agt_x", "username": "agent-9", "name": "mila"})
     p = {"persona_name": "Mila Sommer"}
     u = await A._persona_username(p)
     assert u == "mila2"

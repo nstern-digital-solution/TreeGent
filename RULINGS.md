@@ -335,3 +335,27 @@ intent survives):
   dead code to be removed.)
 
 Verification: chat suite 44 passed (live uvicorn + fresh mongod).
+
+## R82 review round (subagent, 2026-10-17) — 4 blockers fixed
+
+1. R81 rename endpoint REMOVED (retired by ruling; it still wrote
+   renamed_from — the loaded gun that broke the Meteor join).
+2. Forge account now mirrors the GENERATED name (rosa), stable ID only
+   as legacy fallback — @rosa resolves in issues/PRs. Tests updated to
+   pin the correct contract.
+3. Stale R81 workspace-migration test deleted (broke runtime suite at
+   collection). Runtime suite: 139 passed + 3 skipped.
+4. Workspace legacy-name adoption: an agent finding no dir for its
+   stable ID but one for its generated name (R81-era) MOVES it — no
+   silent amnesia.
+
+Risks fixed: name-collision uniqueness now checks the NAME field (was
+username — two rosas both passed); credential handoff fires for existing
+accounts (422 path + backfill, agents only) with pending-state + logging
+instead of silent swallow; resolve-actor matches name then username
+(runtime DMs by generated name work); Admin UI + tg.createActor require
+the stable username for agents (no half-created principals).
+Suites: chat 49 passed (live uvicorn + fresh mongod), runtime 139+3.
+Known residual (accepted): no JS test pins the Meteor myActor join —
+the Python suites cannot see it; unbrick script does not rename forge
+accounts back (forge handles rosa/greta stay — correct per ruling).
