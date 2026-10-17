@@ -68,6 +68,25 @@ async def test_handoff_writes_secret_with_token(monkeypatch):
 
     monkeypatch.setattr(forge, "_api", fake_api)
     monkeypatch.setattr(forge, "_secrets_put", fake_put)
+    # R82 mint path: admin basic-auth via the official route (spec'd);
+    # fake the httpx client the mint uses
+    import httpx as _hx
+
+    class _C:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            calls.append(("POST", url, json))
+            return _Resp()
+
+    monkeypatch.setattr(forge.settings, "forge_admin_password",
+                        "pw", raising=False)
+    monkeypatch.setattr(_hx, "AsyncClient", lambda **kw: _C())
+    monkeypatch.setattr(forge, "_grant_repo_access", fake_put)
     monkeypatch.setattr(forge.settings, "forge_url", "https://git.example")
     await forge._handoff_credentials({"_id": "agt_x"}, "rosa", "pw")
     assert any("/tokens" in p for _, p, _ in calls), calls

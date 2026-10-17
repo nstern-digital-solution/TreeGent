@@ -26,17 +26,39 @@ curl -sf "$INTERNAL/api/healthz" >/dev/null 2>&1 \
 # 2. admin account (random password unless FORGE_ADMIN_PW is set; the API
 #    token is the working credential). The forgejo binary refuses to run as
 #    root, so exec as the container's 'git' user.
-PW="${FORGE_ADMIN_PW:-$(head -c 32 /dev/urandom | base64 | tr -d '/+' | head -c 28)}"
-if docker compose exec -u git -T server forgejo admin user list 2>/dev/null \
+# Admin password flow (R82, 2026-10-17): the official token-mint route
+# (POST /users/{u}/tokens) requires BASIC auth — an admin password is
+# the only credential that can mint agent tokens via the API (spec +
+# routers/api/v1/api.go, Forgejo v12.0.4). Therefore the password must
+# be KNOWN, not random: if FORGE_ADMIN_PW is set we create with it (or
+# reset an existing account to it); unset means random-on-create and
+# the mint falls back to the container CLI (TG_FORGE_COMPOSE_DIR).
+if [ -n "${FORGE_ADMIN_PW:-}" ] && \
+        docker compose exec -u git -T server forgejo admin user list 2>/dev/null \
         | awk '{print $2}' | grep -qx 'treegent-admin'; then
-    echo "admin account already exists"
-else
-    echo "creating admin account 'treegent-admin'"
+    echo "admin exists — resetting password to FORGE_ADMIN_PW (mint route)"
+    docker compose exec -u git -T server forgejo admin user change-password \
+        --username treegent-admin --password "$FORGE_ADMIN_PW" \
+        --must-change-password=false
+elif [ -n "${FORGE_ADMIN_PW:-}" ]; then
+    echo "creating admin account 'treegent-admin' (known password)"
     docker compose exec -u git -T server forgejo admin user create \
         --admin --username treegent-admin \
         --email "admin@${DOMAIN#git.}" \
-        --password "$PW" --must-change-password=false
-    echo "admin password (store in the secrets service): $PW"
+        --password "$FORGE_ADMIN_PW" --must-change-password=false
+else
+    PW="$(head -c 32 /dev/urandom | base64 | tr -d '/+' | head -c 28)"
+    if docker compose exec -u git -T server forgejo admin user list 2>/dev/null \
+            | awk '{print $2}' | grep -qx 'treegent-admin'; then
+        echo "admin account already exists"
+    else
+        echo "creating admin account 'treegent-admin'"
+        docker compose exec -u git -T server forgejo admin user create \
+            --admin --username treegent-admin \
+            --email "admin@${DOMAIN#git.}" \
+            --password "$PW" --must-change-password=false
+        echo "admin password (store in the secrets service): $PW"
+    fi
 fi
 
 # 3. connector token via the container CLI: needs NO admin password and NO
@@ -71,5 +93,17 @@ if grep -q '^TG_CHAT_FORGE_URL=' "$ENV_FILE" 2>/dev/null; then
 else
     echo "TG_CHAT_FORGE_URL=https://$DOMAIN" >> "$ENV_FILE"
 fi
+# R82: mint path + agent repo access (see deploy/env.example). The admin
+# password enables the official basic-auth mint route; COMPOSE_DIR the
+# CLI fallback; AGENT_REPOS the collaborator grants.
+for VAR in TG_FORGE_ADMIN_PW TG_FORGE_COMPOSE_DIR TG_FORGE_AGENT_REPOS; do
+    VAL="${!VAR:-}"
+    [ -n "$VAL" ] || continue
+    if grep -q "^$VAR=" "$ENV_FILE" 2>/dev/null; then
+        sed -i "s|^$VAR=.*|$VAR=$VAL|" "$ENV_FILE"
+    else
+        echo "$VAR=$VAL" >> "$ENV_FILE"
+    fi
+done
 
 echo "OK — forge up, connector armed."

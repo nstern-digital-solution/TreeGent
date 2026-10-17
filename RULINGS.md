@@ -359,3 +359,31 @@ Suites: chat 49 passed (live uvicorn + fresh mongod), runtime 139+3.
 Known residual (accepted): no JS test pins the Meteor myActor join —
 the Python suites cannot see it; unbrick script does not rename forge
 accounts back (forge handles rosa/greta stay — correct per ruling).
+
+## R83 — Forge credential mint, spec-verified (2026-10-17)
+
+Felix: "FORGEJO IS FULLY OPEN SOURCE YOU CAN CHECK ANY API AND BEHAVIOUR
+BEFOREHAND. I DO NOT WANT ANY HALF ARSED SHIT ANYMORE"
+
+Verified against the OFFICIAL v12.0.4 OpenAPI spec
+(templates/swagger/v1_json.tmpl) and routers/api/v1/api.go BEFORE
+writing code this time:
+- POST /admin/users/{u}/tokens DOES NOT EXIST (my invented route —
+  root cause of Rosa's missing credential).
+- POST /users/{u}/tokens is real; reqBasicOrRevProxyAuth + reqToken +
+  reqSelfOrAdmin: BASIC auth only (token auth refused), admin may mint
+  for any user.
+- DELETE /users/{u}/tokens/{id}: basic auth; GET list: admin token ok.
+Full loop LIVE-PROVEN on Forgejo 12.0.4 before shipping: admin
+basic-auth mint -> rosa token -> private-repo collaborator grant (PUT
+/repos/{o}/{r}/collaborators/{u} 204 — required: private repos 404 for
+non-collaborators even with valid token) -> clone -> branch -> push ->
+PR #84 opened BY ROSA'S TOKEN.
+Code: _handoff_credentials now uses the official route with admin
+basic auth (TG_FORGE_ADMIN_PW), CLI fallback (TG_FORGE_COMPOSE_DIR),
+deterministic 422 retry (list->delete->re-mint), failures recorded
+(forge.handoff=pending + error), _grant_repo_access adds agents as
+write collaborators on TG_FORGE_AGENT_REPOS. bootstrap.sh: known admin
+password flow (create-or-reset) + env wiring for the three vars.
+Chat suite 52 passed. Unit tests pin the spec contract (route, Basic
+header, scopes, pending-not-silent).

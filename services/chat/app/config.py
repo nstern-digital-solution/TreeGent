@@ -18,6 +18,15 @@ class Settings(BaseSettings):
     forge_token: str = Field(default="",
                          validation_alias=AliasChoices("TG_CHAT_FORGE_TOKEN", "TG_FORGE_TOKEN"))
     # R82: forge accounts carry the agent's real mailbox address
+    # (CLI minting runs docker compose from this dir; empty = API mint)
+    forge_compose_dir: str = Field(default="",
+                                    env="TG_FORGE_COMPOSE_DIR")
+    # R82: admin basic-auth password for the official token-mint route
+    # (POST /users/{u}/tokens — basic auth only per Forgejo v12 spec)
+    forge_admin_password: str = Field(default="",
+                                      env="TG_FORGE_ADMIN_PW")
+    # R82: repos agents get write access to after migration (csv)
+    forge_agent_repos: str = Field(default="", env="TG_FORGE_AGENT_REPOS")
     mail_domain: str = Field(default="",
                         validation_alias=AliasChoices("TG_MAIL_DOMAIN"))
 

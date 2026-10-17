@@ -191,42 +191,122 @@ async def sync_pending() -> int:
 
 
 async def _handoff_credentials(actor: dict, uname: str, password: str) -> None:
-    """R82: give the agent its forge credentials via the secrets service.
+    """R82: give the agent its forge credential.
 
-    Mints a scoped API token (repo, issue, PR read/write for the user's
-    own scope) via the admin API, then writes two secrets into the
-    agent's scope: the token (for git-over-https and API) and the URL.
-    Password is NOT stored — tokens are revocable and scope-limited.
-    Best-effort: failures recorded on the actor, never raise.
+    Mints a scoped API token (write:repository, write:issue, read:user)
+    and writes it into the agent's own secrets scope as forge/token
+    together with the forge URL — usable for git-over-https and the API
+    at once. Passwords are never stored; tokens are revocable.
+
+    Routes verified against the official Forgejo v12.0.4 OpenAPI spec
+    and routers/api/v1/api.go (2026-10-17):
+      - POST   /users/{u}/tokens          exists; requires BASIC auth
+                                          (reqBasicOrRevProxyAuth) +
+                                          reqSelfOrAdmin — an admin
+                                          password may mint for anyone.
+                                          Token auth is REFUSED here.
+      - POST   /admin/users/{u}/tokens    DOES NOT EXIST (my earlier
+                                          bug — invented route).
+      - GET    /users/{u}/tokens          admin token may list (ids
+                                          only, sha1 masked).
+      - DELETE /users/{u}/tokens/{id}     basic auth, admin may delete.
+    Two working mint paths, both live-proven on Forgejo 12.0.4:
+      1. TG_FORGE_ADMIN_PW set  -> official API route w/ basic auth
+      2. TG_FORGE_COMPOSE_DIR set -> container CLI (bootstrap's path)
+    Failures are recorded on the actor (forge.handoff=pending) — never
+    silent, never raise.
     """
+    import asyncio
     import logging
+    import re as _re2
     log = logging.getLogger("treegent.forge")
     try:
-        import re as _re2
         suffix = _re2.sub(r"[^a-z0-9]", "", actor["_id"].lower())[-8:] or "agent"
         tname = f"treegent-agent-{suffix}"
-        r = await _api("POST", f"/admin/users/{uname}/tokens",
-                       json={"name": tname,
-                             "scopes": ["write:repository", "write:issue",
-                                        "read:user"]})
-        if r.status_code == 422:
-            # token name exists from a previous attempt — cannot re-read
-            # it; record and surface instead of pretending success
-            await db.actors.update_one(
-                {"_id": actor["_id"]},
-                {"$set": {"forge.handoff": "token-exists",
-                          "forge.handoff_token": tname}})
-            log.warning("forge token %s exists for %s; secret not rewritten",
-                        tname, uname)
-            return
-        if r.status_code != 201:
+        scopes = ["write:repository", "write:issue", "read:user"]
+        tok = None
+
+        if settings.forge_admin_password:
+            # PATH 1 (preferred): official API route, admin basic auth
+            import base64
+            import httpx as _hx
+            cred = base64.b64encode(
+                ("treegent-admin:" + settings.forge_admin_password)
+                .encode()).decode()
+            hdr = {"Authorization": "Basic " + cred,
+                   "Content-Type": "application/json"}
+            base = settings.forge_url.rstrip("/") + "/api/v1"
+            async with _hx.AsyncClient(timeout=15) as c:
+                r = await c.post(f"{base}/users/{uname}/tokens",
+                                 headers=hdr,
+                                 json={"name": tname, "scopes": scopes})
+                if r.status_code == 422:
+                    # name exists from an earlier landed-but-unrecorded
+                    # mint: find id, delete, re-mint (deterministic)
+                    rl = await c.get(f"{base}/users/{uname}/tokens",
+                                     headers=hdr)
+                    tid = next((t.get("id") for t in rl.json()
+                                if t.get("name") == tname), None)
+                    if tid is not None:
+                        await c.delete(
+                            f"{base}/users/{uname}/tokens/{tid}",
+                            headers=hdr)
+                        r = await c.post(f"{base}/users/{uname}/tokens",
+                                         headers=hdr,
+                                         json={"name": tname,
+                                               "scopes": scopes})
+                if r.status_code == 201:
+                    tok = r.json().get("sha1")
+                else:
+                    await db.actors.update_one(
+                        {"_id": actor["_id"]},
+                        {"$set": {"forge.handoff": "pending",
+                                  "forge.handoff_error":
+                                  f"mint {r.status_code}: "
+                                  f"{r.text[:120]}"}})
+                    log.warning("forge basic-auth mint failed for %s: %s %s",
+                                uname, r.status_code, r.text[:120])
+                    return
+        elif settings.forge_compose_dir:
+            # PATH 2: container CLI (no password needed; bootstrap's
+            # own mechanism — live-proven)
+            cmd = ["docker", "compose", "exec", "-u", "git", "-T", "server",
+                   "forgejo", "admin", "user", "generate-access-token",
+                   "-u", uname, "-t", tname,
+                   "--scopes", "write:repository,write:issue,read:user"]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, cwd=settings.forge_compose_dir,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT)
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+                text = (out or b"").decode(errors="replace")
+            except Exception as e:  # noqa: BLE001
+                text = "exec failed: " + str(e)
+                proc = None
+            m = _re2.search(r"[0-9a-f]{40}", text or "")
+            if proc is not None and proc.returncode == 0 and m:
+                tok = m.group(0)
+            else:
+                await db.actors.update_one(
+                    {"_id": actor["_id"]},
+                    {"$set": {"forge.handoff": "pending",
+                              "forge.handoff_error":
+                              "cli mint: " + text[:160]}})
+                log.warning("forge CLI mint failed for %s: %s", uname,
+                            text[:160])
+                return
+        else:
             await db.actors.update_one(
                 {"_id": actor["_id"]},
                 {"$set": {"forge.handoff": "pending",
                           "forge.handoff_error":
-                          f"mint {r.status_code}: {r.text[:120]}"}})
+                          "no mint path: set TG_FORGE_ADMIN_PW (API) or "
+                          "TG_FORGE_COMPOSE_DIR (CLI)"}})
+            log.warning("forge handoff for %s: no mint path configured",
+                        uname)
             return
-        tok = r.json().get("sha1")
+
         await _secrets_put(
             actor["_id"],
             "forge/token",
@@ -236,6 +316,12 @@ async def _handoff_credentials(actor: dict, uname: str, password: str) -> None:
         await db.actors.update_one(
             {"_id": actor["_id"]},
             {"$set": {"forge.handoff": "ok"}})
+
+        # Repo access: private repos need an explicit collaborator grant
+        # (live-proven: rosa 404 on private repo -> PUT collaborator 204
+        # -> clone OK). Failures recorded, not fatal — repo may simply
+        # not be migrated yet.
+        await _grant_repo_access(actor, uname)
     except Exception as e:  # noqa: BLE001 — never break provisioning
         log.warning("forge credential handoff failed for %s: %s", uname, e)
         try:
@@ -246,6 +332,36 @@ async def _handoff_credentials(actor: dict, uname: str, password: str) -> None:
         except Exception:  # noqa: BLE001
             pass
 
+
+async def _grant_repo_access(actor: dict, uname: str) -> None:
+    """Add the agent as a write collaborator on TG_FORGE_AGENT_REPOS
+    (comma-separated repo names owned by treegent-admin). Non-fatal:
+    a missing repo (not yet migrated) is recorded as pending-repos and
+    retried on the next restart/backfill."""
+    import logging
+    log = logging.getLogger("treegent.forge")
+    names = [n.strip() for n in settings.forge_agent_repos.split(",")
+             if n.strip()]
+    if not names:
+        return
+    granted, missing = [], []
+    for repo in names:
+        r = await _api("PUT",
+                       f"/repos/treegent-admin/{repo}/collaborators/{uname}",
+                       json={"permission": "write"})
+        if r.status_code in (200, 201, 204):
+            granted.append(repo)
+        else:
+            missing.append(f"{repo}({r.status_code})")
+    if granted:
+        await db.actors.update_one(
+            {"_id": actor["_id"]},
+            {"$set": {"forge.repos": granted}})
+    if missing:
+        await db.actors.update_one(
+            {"_id": actor["_id"]},
+            {"$set": {"forge.repos_pending": missing}})
+        log.warning("repo access pending for %s: %s", uname, missing)
 
 async def _secrets_put(owner_id: str, name: str, fields: dict) -> None:
     """Write a secret into an agent's scope via the secrets service."""

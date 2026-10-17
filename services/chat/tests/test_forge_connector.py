@@ -132,7 +132,9 @@ async def test_provision_idempotent_on_exists(fake_forge, monkeypatch):
     await forge.provision(actor)     # second run: 422 -> success
     # R82: first run also mints a token — count only user creates
     assert len([c for c in calls if c.endswith("/admin/users")]) == 2
-    assert any("/tokens" in c for c in calls)
+    # R82 mint contract: with no admin pw and no compose dir the handoff
+    # records pending("no mint path"); the mint itself is pinned in
+    # test_forge_mint_contract.py (official /users/{u}/tokens route).
     assert "rosa-m" in fake_forge.users
     assert all(w[1]["$set"].get("forge.status", "ok") == "ok" for w in writes)
     # 2 provision updates + R82 handoff bookkeeping per run
